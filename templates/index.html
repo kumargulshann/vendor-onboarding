@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vendor Onboarding — Automated Review</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#162032; --line:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --green:#22c55e; --amber:#f59e0b;
+    --red:#ef4444; --blue:#3b82f6; --accent:#818cf8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.45}
+  header{padding:20px 28px;border-bottom:1px solid var(--line);display:flex;
+    align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+  header h1{font-size:18px;margin:0;font-weight:650}
+  header .sub{color:var(--muted);font-size:13px}
+  .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;padding:18px 28px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px 18px 20px}
+  .card h2{font-size:13px;margin:0 0 14px;letter-spacing:.3px;color:var(--accent);
+    text-transform:uppercase}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--line);
+    color:var(--text);border-radius:8px;padding:8px 10px;font-size:14px}
+  textarea{min-height:70px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .checks{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px}
+  .checks label{display:flex;align-items:center;gap:6px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;
+    color:var(--text);width:auto;margin:0}
+  button{background:var(--accent);color:#0b1020;border:none;border-radius:10px;
+    padding:12px 16px;font-size:14px;font-weight:650;cursor:pointer;width:100%;
+    margin-top:18px;transition:filter .15s}
+  button:hover{filter:brightness(1.08)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:650}
+  .pill.approved{background:rgba(34,197,94,.16);color:var(--green)}
+  .pill.pending{background:rgba(245,158,11,.16);color:var(--amber)}
+  .pill.rejected{background:rgba(239,68,68,.16);color:var(--red)}
+  .stage{display:flex;gap:12px;align-items:flex-start;padding:10px 0;
+    border-bottom:1px solid var(--line)}
+  .stage .dot{width:11px;height:11px;border-radius:50%;margin-top:5px;
+    background:var(--blue);flex:none}
+  .stage.done .dot{background:var(--green)}
+  .stage .st{font-size:13px;font-weight:600}
+  .stage .sd{font-size:12px;color:var(--muted)}
+  .check-row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;
+    border-bottom:1px dashed var(--line);font-size:13px}
+  .check-row .ok{color:var(--green)}
+  .check-row .bad{color:var(--red)}
+  .needed{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font-size:12.5px;margin-top:10px}
+  .needed ul{margin:6px 0 0;padding-left:18px}
+  .muted{color:var(--muted);font-size:12.5px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase}
+  .log{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:#0b1220;
+    border:1px solid var(--line);border-radius:10px;padding:12px;max-height:240px;
+    overflow:auto;white-space:pre-wrap;word-break:break-word}
+  .msg{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.35);
+    border-radius:8px;padding:8px 10px;margin-top:6px;font-size:12.5px}
+  .status{margin:0 28px;padding:10px 14px;border-radius:10px;font-size:13px;
+    border:1px solid var(--red);background:rgba(239,68,68,.1);color:var(--red)}
+  .running{display:flex;align-items:center;gap:8px;padding:10px 0;color:var(--blue)}
+  .spinner{width:12px;height:12px;border:2px solid var(--blue);border-top-color:transparent;
+    border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Vendor Onboarding — Automated Review</h1>
+    <div class="sub">Input a vendor submission → rule engine → reasoned decision. PS-2 case study.</div>
+  </div>
+  <div id="aibadge" class="muted">AI reasoning: deterministic fallback</div>
+</header>
+
+<div id="status" class="status" style="display:none"></div>
+
+<div class="grid">
+  <!-- LEFT: input + live run view -->
+  <div class="card">
+    <h2>1 · Vendor Submission</h2>
+
+    <label>Load example</label>
+    <select id="example"><option value="">— choose a prepared case —</option></select>
+
+    <label>Vendor (trading) name</label>
+    <input id="vendor_name" placeholder="Acme Manufacturing Pvt Ltd" />
+    <div class="row">
+      <div><label>Registered legal name</label><input id="legal_name" placeholder="Acme Manufacturing Pvt. Ltd." /></div>
+      <div><label>Country (ISO-2)</label>
+        <select id="country">
+          <option value="IN">IN — India</option>
+          <option value="US">US — United States</option>
+          <option value="GB">GB — United Kingdom</option>
+          <option value="DE">DE — Germany</option>
+          <option value="ZZ">ZZ — Unsupported</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div><label>Tax ID</label><input id="tax_id" placeholder="e.g. 29ABCDE1234F1Z5" /></div>
+      <div><label>Contact email</label><input id="contact_email" placeholder="ops@acme.com" /></div>
+    </div>
+    <div class="row">
+      <div><label>Bank account holder name</label><input id="bank_holder_name" placeholder="Acme Manufacturing Pvt Ltd" /></div>
+      <div><label>Bank account number</label><input id="bank_account_number" placeholder="1234567890" /></div>
+    </div>
+
+    <label>Bank-proof document (sample bank letter — text)</label>
+    <textarea id="bank_proof_text" placeholder="Account holder: Acme Manufacturing Pvt Ltd ..."></textarea>
+
+    <label>Bank-proof PDF upload (optional - overrides the text above for this run)</label>
+    <input type="file" id="bank_pdf" accept=".pdf,application/pdf" />
+    <div id="evidenceInfo" class="muted" style="margin-top:4px"></div>
+
+    <label>Attached documents</label>
+    <div class="checks">
+      <label><input type="checkbox" class="doc" value="incorporation_proof" checked /> Incorporation proof</label>
+      <label><input type="checkbox" class="doc" value="bank_proof" checked /> Bank proof</label>
+      <label><input type="checkbox" class="doc" value="tax_registration" checked /> Tax registration</label>
+      <label><input type="checkbox" class="doc" value="address_proof" checked /> Address proof</label>
+    </div>
+    <button id="runBtn">▶ Run process</button>
+
+    <div style="margin-top:18px">
+      <h2>2 · Live Run View</h2>
+      <div id="stages">
+        <div id="running" class="running" style="display:none">
+          <span class="spinner"></span> running…
+        </div>
+        <div id="stagelist" class="muted">Run the process to see each stage execute in real time.</div>
+      </div>
+      <div id="result"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: dashboard -->
+  <div class="card">
+    <h2>Dashboard · Run History</h2>
+    <div class="muted" id="dashHint">No runs yet.</div>
+    <table id="dashTable">
+      <thead><tr><th>Run</th><th>Status</th><th>Attempt</th><th>ms</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:14px">
+      <h2>Run Log</h2>
+      <div id="log" class="log muted">// no run selected</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const docs = () => [...document.querySelectorAll('.doc:checked')].map(c=>c.value);
+const F = (id) => $(id).value;
+function setField(id, v){ $(id).value = (v==null?'':v); }
+
+// --- bank evidence state + selection generation guard -----------------------
+// A PDF is sent with the form on Run and parsed once on the server. The
+// generation counter ensures a delayed response from an earlier selection can
+// never control a later run.
+let evidenceState = { source: 'text', file: null, error: '' };
+let evidenceGen = 0;
+let correctionCaseId = null;   // set when correcting an existing case
+let correctionPrevId = null;   // the attempt being corrected (verified on save)
+const MAX_PDF_BYTES = 1000000; // must match app/pdf_evidence.py
+
+// A selected file is invalid (oversized) -> submission must be blocked until
+// the vendor replaces or explicitly clears it.
+function hasInvalidFile(){
+  return evidenceState.source === 'pdf' && evidenceState.error;
+}
+
+function showStatus(msg){
+  const el = $('status');
+  if(msg){ el.textContent = msg; el.style.display = 'block'; }
+  else { el.textContent = ''; el.style.display = 'none'; }
+}
+function showConflict(msg, conflict){
+  // A correction could not be saved (stale/closed/unknown target). Show the
+  // readable reason and a direct way to open the latest attempt, so the
+  // reviewer is not left stranded on the old form.
+  const el = $('status');
+  const btn = conflict.latest_run_id
+    ? '<button id="openLatestBtn" style="margin-top:8px;padding:6px 12px;font-size:13px">'
+      +'Open latest attempt ('+(conflict.latest_attempt_number||'?')+')</button>'
+    : '';
+  el.innerHTML = '<span style="color:var(--red)">'+esc(msg)+'</span>'+btn;
+  el.style.display = 'block';
+  if(conflict.latest_run_id){
+    $('openLatestBtn').addEventListener('click',
+      ()=>showRun(conflict.latest_run_id));
+  }
+}
+function setEvidenceInfo(){
+  const info = $('evidenceInfo');
+  if(evidenceState.source === 'pdf'){
+    if(evidenceState.error)
+      info.innerHTML = '<span style="color:var(--red)">PDF: '+esc(evidenceState.error)+'</span>';
+    else
+      info.innerHTML = '<span style="color:var(--blue)">Evidence source: PDF selected (parsed on submit).</span>';
+  } else {
+    info.innerHTML = '<span style="color:var(--muted)">Evidence source: pasted text.</span>';
+  }
+}
+
+function loadExamples(){
+  fetch('/api/examples').then(r=>r.json()).then(j=>{
+    const sel = $('example');
+    j.examples.forEach(e=>{
+      const o = document.createElement('option');
+      o.value = e.name; o.textContent = e.name.replace(/_/g,' ');
+      sel.appendChild(o);
+    });
+  }).catch(()=>{});
+}
+$('example').addEventListener('change', async (e)=>{
+  const name = e.target.value; if(!name) return;
+  const j = await (await fetch('/api/examples')).json();
+  const ex = j.examples.find(x=>x.name===name);
+  if(!ex) return;
+  const d = ex.data;
+  setField('vendor_name', d.vendor_name);
+  setField('legal_name', d.legal_name);
+  $('country').value = d.country || 'IN';
+  setField('tax_id', d.tax_id);
+  setField('contact_email', d.contact_email);
+  setField('bank_holder_name', d.bank_holder_name);
+  setField('bank_account_number', d.bank_account_number);
+  setField('bank_proof_text', d.bank_proof_text);
+  document.querySelectorAll('.doc').forEach(c=>c.checked = (d.documents||[]).includes(c.value));
+  // loading an example clears the file picker and starts fresh evidence
+  $('bank_pdf').value = '';
+  correctionCaseId = null;
+  correctionPrevId = null;
+  evidenceGen++;
+  evidenceState = { source: 'text', file: null, error: '' };
+  setEvidenceInfo();
+  updateRunButton();
+});
+
+// --- PDF upload handler (records the file; parsing happens on Run) --------
+$('bank_pdf').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  evidenceGen++;
+  if(!file){
+    // explicitly cleared -> evidence returns to the pasted text, submission allowed
+    evidenceState = { source: 'text', file: null, error: '' };
+    setEvidenceInfo();
+    updateRunButton();
+    return;
+  }
+  if(file.size > MAX_PDF_BYTES){
+    // keep the error visible; block submission until replaced or cleared
+    evidenceState = { source: 'pdf', file: null, error: 'file exceeds 1 MB limit' };
+    setEvidenceInfo();
+    showStatus('The selected PDF exceeds the 1 MB limit. Replace it with a '
+      +'smaller bank letter or clear the file to submit.');
+    updateRunButton();
+    return;
+  }
+  evidenceState = { source: 'pdf', file: file, error: '' };
+  setEvidenceInfo();
+  showStatus('');
+  updateRunButton();
+});
+
+function updateRunButton(){
+  // block the button while a selected file is invalid; also guards the handler
+  $('runBtn').disabled = running || hasInvalidFile();
+}
+
+function formFields(){
+  return {
+    vendor_name: F('vendor_name').trim(),
+    legal_name: F('legal_name').trim() || null,
+    country: $('country').value,
+    tax_id: F('tax_id').trim() || null,
+    contact_email: F('contact_email').trim() || null,
+    bank_holder_name: F('bank_holder_name').trim() || null,
+    bank_account_number: F('bank_account_number').trim() || null,
+    bank_proof_text: F('bank_proof_text').trim() || null,
+    documents: docs(),
+    case_id: correctionCaseId,
+    expected_previous_run_id: correctionPrevId || null
+  };
+}
+function buildRunBody(){
+  // PDF selected -> send file + form together (parsed once on the server)
+  if(evidenceState.source === 'pdf' && evidenceState.file){
+    const fd = new FormData();
+    const f = formFields();
+    fd.append('vendor_name', f.vendor_name || '');
+    fd.append('legal_name', f.legal_name || '');
+    fd.append('country', f.country || '');
+    fd.append('tax_id', f.tax_id || '');
+    fd.append('contact_email', f.contact_email || '');
+    fd.append('bank_holder_name', f.bank_holder_name || '');
+    fd.append('bank_account_number', f.bank_account_number || '');
+    f.documents.forEach(d => fd.append('documents', d));
+    if(f.case_id) fd.append('case_id', f.case_id);
+    if(f.expected_previous_run_id) fd.append('expected_previous_run_id', f.expected_previous_run_id);
+    fd.append('file', evidenceState.file);
+    return { multipart: fd };
+  }
+  return { json: { data: formFields() } };
+}
+
+// --- genuinely live run via SSE (fetch + stream reader) --------------------
+let running = false;
+async function run(){
+  if(running) return;                       // guard against double-click
+  if(hasInvalidFile()){                     // guard: block submission handler
+    showStatus('The selected PDF is invalid. Replace it with a smaller bank '
+      +'letter or clear the file to submit.');
+    updateRunButton();
+    return;
+  }
+  const gen = evidenceGen;
+  running = true;
+  $('runBtn').disabled = true;
+  $('result').innerHTML = '';
+  $('stagelist').innerHTML = '';
+  showStatus('');
+  $('running').style.display = 'flex';
+  let result = null;
+  try{
+    const b = buildRunBody();
+    const opts = b.multipart
+      ? { method: 'POST', body: b.multipart }
+      : { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(b.json) };
+    const res = await fetch('/api/run/stream', opts);
+    if(!res.ok){
+      const err = await res.json().catch(()=>({ error: 'HTTP '+res.status }));
+      if(gen === evidenceGen) showStatus('Could not process the upload: '+esc(err.error||'error'));
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while(true){
+      const {value, done} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      let idx;
+      while((idx = buf.indexOf('\n\n')) !== -1){
+        const chunk = buf.slice(0, idx); buf = buf.slice(idx+2);
+        let evt = 'message', data = '';
+        for(const line of chunk.split('\n')){
+          if(line.startsWith('event:')) evt = line.slice(6).trim();
+          else if(line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if(gen !== evidenceGen) continue;   // stale selection: ignore
+        if(evt === 'stage') addStage(JSON.parse(data));
+        else if(evt === 'result') result = JSON.parse(data);
+        else if(evt === 'error'){
+          const e = JSON.parse(data);
+          if(e.conflict && e.conflict.latest_run_id){
+            showConflict(e.error, e.conflict);
+          }else{
+            showStatus('Run error: '+esc(e.error || data));
+          }
+        }
+      }
+    }
+    if(gen === evidenceGen && result) renderResult(result);
+  }catch(e){
+    if(gen === evidenceGen) showStatus('Run failed: '+esc(e));
+  }finally{
+    $('running').style.display = 'none';
+    running = false;
+    updateRunButton();
+    loadCases();
+  }
+}
+
+const STAGE_LABELS = {
+  input_received: "Received vendor submission",
+  validate: "Checked bank evidence & compliance",
+  decision: "Made decision",
+  ai_reasoning: "Generated reasoning"
+};
+function addStage(s){
+  const d = document.createElement('div');
+  d.className = 'stage done';
+  d.innerHTML = '<div class="dot"></div><div><div class="st">'+
+    esc(STAGE_LABELS[s.stage] || s.stage)+
+    '</div><div class="sd">'+esc(s.detail)+'</div></div>';
+  $('stagelist').appendChild(d);
+}
+function renderStages(r){
+  $('stagelist').innerHTML = '';
+  (r.stages || []).forEach(addStage);
+}
+
+function renderResult(r){
+  const status = r.status;
+  const rows = r.checks.map(c=>'<div class="check-row">'+
+    '<span>'+esc(c.name)+'</span>'+
+    '<span class="'+(c.passed?'ok':'bad')+'">'+(c.passed?'✓ pass':'✗ fail')+'</span></div>').join('');
+
+  const bp = r.bank_proof_summary || {};
+  const bpHolder = bp.holder_extracted
+    ? '<b>'+esc(bp.holder_extracted)+'</b>'
+    : '<span style="color:var(--red)">none extracted</span>';
+  const bpBlock = '<div class="needed"><b>Bank evidence:</b> source '+esc(bp.source||'text')
+    +' | holder '+bpHolder
+    +' | form account '+esc(bp.form_account_masked||'-')
+    +' | letter account '+esc(bp.letter_account_masked||'-')
+    +' | name: '+esc(bp.name_outcome)+' | account: '+esc(bp.account_outcome)+'</div>';
+
+  const caseLine = '<div class="muted" style="margin-top:4px">Case '+esc(r.case_id||'-')
+    +' · attempt '+esc(r.attempt_number||1)
+    +(r.previous_run_id ? ' · corrected from '+esc(r.previous_run_id) : '')
+    +' · '+esc(r.created_at||'')+'</div>';
+
+  const msgs = (r.vendor_messages||[]).map(m=>
+    '<div class="msg"><b>'+esc(m.check)+':</b> '+esc(m.message)+'</div>').join('');
+  // Each distinct correction request is shown once, in plain language, in the
+  // vendor-facing response below. needed_back mirrors vendor_messages, so it is
+  // not repeated here (that would show each action more than once).
+  const needed = '';
+
+  // Correction is offered ONLY on the latest attempt of a case, and only when
+  // that latest attempt is pending. Older attempts stay viewable but cannot be
+  // corrected — the server verifies the predecessor on save.
+  const canCorrect = !!r.correction_allowed;
+  const correctBtn = canCorrect
+    ? '<button id="correctBtn" style="margin-top:10px;width:auto;padding:8px 14px;font-size:13px">Correct and resubmit</button>'
+    : (status === 'pending'
+      ? '<div class="needed" style="margin-top:10px"><b>Correction:</b> Only the '
+        +'latest pending attempt can be corrected. Open the latest attempt of '
+        +'this case to correct it.</div>'
+      : '');
+
+  // --- reviewer comparison: current decision, blockers, what changed -------
+  let compBlock = '';
+  const comp = r.comparison;
+  if(comp){
+    const changedRows = (comp.changed_checks||[]).map(c=>
+      '<div class="check-row"><span>'+esc(c.name)+'</span>'+
+      '<span class="'+(c.after?'ok':'bad')+'">'+
+      (c.before?'pass':'fail')+' \u2192 '+(c.after?'pass':'fail')+'</span></div>'
+    ).join('');
+    const prevBp = comp.previous_bank_proof_summary || {};
+    const curBp = comp.current_bank_proof_summary || {};
+    const bpDiff = '<div class="muted" style="margin-top:4px">'+
+      'Attempt '+esc(comp.previous_attempt_number)+': account '+
+      esc(prevBp.account_outcome||'-')+' ('+esc(prevBp.form_account_masked||'-')+
+      ' / '+esc(prevBp.letter_account_masked||'-')+')'+
+      ' &rarr; Attempt '+esc(comp.current_attempt_number)+': account '+
+      esc(curBp.account_outcome||'-')+' ('+esc(curBp.form_account_masked||'-')+
+      ' / '+esc(curBp.letter_account_masked||'-')+')</div>';
+    const blockerList = (comp.current_blockers||[]).length
+      ? '<div style="margin-top:4px;color:var(--red)"><b>Still held because:</b> '+
+        comp.current_blockers.map(esc).join('; ') + '</div>'
+      : '';
+    const tsLine = '<div class="muted" style="margin-top:4px">'+
+      'Attempt '+esc(comp.previous_attempt_number)+' '+
+      esc(comp.previous_created_at||'')+' \u2192 attempt '+
+      esc(comp.current_attempt_number)+' '+esc(comp.current_created_at||'')+'</div>';
+    compBlock =
+      '<div style="margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:10px">'+
+      '<b>Reviewer comparison</b>'+
+      '<div style="margin-top:4px">'+esc(comp.summary)+'</div>'+
+      blockerList +
+      bpDiff +
+      tsLine +
+      (changedRows ? '<div style="margin-top:6px"><b class="muted">Checks that changed</b>'+changedRows+'</div>' : '')+
+      '</div>';
+  } else if((r.attempt_number||1) > 1){
+    compBlock = '<div class="needed" style="margin-top:10px"><b>What changed:</b> '+
+      'This is the first recorded attempt for this case — no earlier attempt to compare against.</div>';
+  } else {
+    compBlock = '<div class="needed" style="margin-top:10px"><b>What changed:</b> '+
+      'First attempt — no earlier attempt to compare against.</div>';
+  }
+
+  // a correction is linked to the case; a later Run would append. Offer an
+  // explicit way to start a fresh submission so it can't become another attempt
+  const newSubBtn = (r.attempt_number||1) > 1
+    ? '<button id="newSubBtn" style="margin-top:10px;width:auto;padding:8px 14px;font-size:13px">Start new submission</button>'
+    : '';
+
+  $('result').innerHTML =
+    '<div style="margin-top:6px"><span class="pill '+status+'">'+esc(status.toUpperCase())+'</span></div>'+
+    caseLine +
+    bpBlock +
+    compBlock +
+    '<div style="margin-top:12px">'+rows+'</div>'+
+    (msgs ? '<div style="margin-top:10px"><b class="muted">Vendor-facing response</b>'+msgs+'</div>' : '')+
+    '<div class="needed" style="margin-top:10px"><b>Reasoning:</b><br>'+esc(r.reasoning)+
+      (r.ai_used?'<br><span class="muted">(via AI reasoning layer)</span>':'')+'</div>'+
+    needed + correctBtn + newSubBtn;
+  if(canCorrect){
+    $('correctBtn').addEventListener('click', ()=>startCorrection(r));
+  }
+  if($('newSubBtn')){
+    $('newSubBtn').addEventListener('click', startNewSubmission);
+  }
+  $('log').textContent = JSON.stringify(r, null, 2);
+}
+
+function startNewSubmission(){
+  // Reset EVERYTHING from the previous vendor so the next Run cannot reuse
+  // their evidence: fields, account, pasted letter, file picker, checklist,
+  // evidence state and the case link.
+  correctionCaseId = null;
+  correctionPrevId = null;
+  ['vendor_name','legal_name','tax_id','contact_email',
+   'bank_holder_name','bank_account_number','bank_proof_text'
+  ].forEach(id => setField(id, ''));
+  $('country').value = 'IN';
+  document.querySelectorAll('.doc').forEach(c=>c.checked = false);
+  $('bank_pdf').value = '';
+  evidenceGen++;
+  evidenceState = { source: 'text', file: null, error: '' };
+  setEvidenceInfo();
+  updateRunButton();
+  showStatus('Started a fresh submission — all previous fields, the file, and '
+    +'the document checklist were cleared. The next Run creates a new case.');
+  $('vendor_name').focus();
+}
+
+function startCorrection(r){
+  correctionCaseId = r.case_id;
+  correctionPrevId = r.id;   // the attempt being corrected; server verifies it
+  const inp = r.input || {};
+  setField('vendor_name', inp.vendor_name || '');
+  setField('legal_name', inp.legal_name || '');
+  $('country').value = inp.country || 'IN';
+  setField('tax_id', inp.tax_id || '');
+  setField('contact_email', inp.contact_email || '');
+  setField('bank_holder_name', inp.bank_holder_name || '');
+  // restore this attempt's document checklist (only the original items stay
+  // checked; missing-document issues clear only when the vendor supplies them)
+  document.querySelectorAll('.doc').forEach(c=>c.checked = (inp.documents||[]).includes(c.value));
+  // sensitive fields require re-entry: a masked ending is NOT the real number
+  setField('bank_account_number', '');
+  setField('bank_proof_text', '');
+  $('bank_pdf').value = '';
+  evidenceGen++;
+  evidenceState = { source: 'text', file: null, error: '' };
+  setEvidenceInfo();
+  updateRunButton();
+  showStatus('Correcting case '+esc(r.case_id)+' — this will be attempt '
+    +esc((r.attempt_number||1)+1)+'. Re-enter the full account number and '
+    +'re-provide bank proof, then Run.');
+  $('bank_account_number').focus();
+}
+
+async function loadCases(){
+  try{
+    const res = await fetch('/api/cases');
+    const j = await res.json();
+    const tb = $('dashTable').querySelector('tbody');
+    if(!j.cases.length){ $('dashHint').textContent='No cases yet.'; tb.innerHTML=''; return; }
+    $('dashHint').textContent = j.count + ' case(s)';
+    tb.innerHTML = j.cases.map(c=>{
+      const attRows = c.attempts.map(a=>
+        '<tr style="cursor:pointer" onclick="showRun(\''+esc(a.id)+'\')">'+
+        '<td>'+esc(a.id)+'</td><td><span class="pill '+esc(a.status)+'">'+esc(a.status)+
+        '</span></td><td>attempt '+esc(a.attempt_number)+'</td><td>'+esc(a.duration_ms)+'</td></tr>'
+      ).join('');
+      return '<tr style="cursor:default;background:var(--panel2)"><td colspan="4">'+
+        '<b>Case '+esc(c.case_id)+'</b> · '+esc(c.vendor)+' · latest '+esc(c.latest_status)+
+        ' ('+esc(c.attempt_count)+' attempt(s))</td></tr>' + attRows;
+    }).join('');
+  }catch(e){/* ignore */}
+}
+
+async function showRun(id){
+  try{
+    const res = await fetch('/api/runs/'+encodeURIComponent(id));
+    if(!res.ok) throw new Error('HTTP '+res.status+' (run not found)');
+    const r = await res.json();
+    renderStages(r);
+    renderResult(r);
+    $('log').textContent = JSON.stringify(r, null, 2);
+    showStatus('');
+  }catch(e){
+    showStatus('Could not load run '+esc(id)+': '+esc(e)+'. The last view is still shown.');
+  }
+}
+
+$('runBtn').addEventListener('click', run);
+loadExamples();
+loadCases();
+
+</script>
+</body>
+</html>

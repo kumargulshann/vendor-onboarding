@@ -1,0 +1,298 @@
+[
+  {
+    "name": "eval_01_clean_approved",
+    "status": "approved",
+    "expected_status": "approved",
+    "status_match": true,
+    "blocking_reasons": [],
+    "expected_reasons": [],
+    "reasons_match": true,
+    "vendor_actions": [],
+    "expected_actions": [],
+    "actions_match": true
+  },
+  {
+    "name": "eval_02_trading_legal_differ",
+    "status": "approved",
+    "expected_status": "approved",
+    "status_match": true,
+    "blocking_reasons": [],
+    "expected_reasons": [],
+    "reasons_match": true,
+    "vendor_actions": [],
+    "expected_actions": [],
+    "actions_match": true
+  },
+  {
+    "name": "eval_03_account_mismatch",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_account_match"
+    ],
+    "expected_reasons": [
+      "bank_account_match"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "Account number in submission (******9999) does NOT match the account in the bank letter (******7890) — payment account needs review"
+    ],
+    "expected_actions": [
+      "Account number in submission (******9999) does NOT match the account in the bank letter (******7890) — payment account needs review"
+    ],
+    "actions_match": true
+  },
+  {
+    "name": "eval_04_missing_docs",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "documents_complete"
+    ],
+    "expected_reasons": [
+      "documents_complete"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "Please provide your address proof and tax registration certificate."
+    ],
+    "expected_actions": [
+      "Please provide your address proof and tax registration certificate."
+    ],
+    "actions_match": true
+  },
+  {
+    "name": "eval_05_holder_conflict",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_holder_match",
+      "bank_proof_document"
+    ],
+    "expected_reasons": [
+      "bank_holder_match"
+    ],
+    "reasons_match": false,
+    "vendor_actions": [
+      "Bank account holder does NOT match the legal name (possible mismatch)",
+      "Bank-proof document account holder 'Meridian Co' does NOT match the legal name — evidence conflicts with the submission"
+    ],
+    "expected_actions": [
+      "Bank account holder does NOT match the legal name (possible mismatch)"
+    ],
+    "actions_match": false
+  },
+  {
+    "name": "eval_06_malformed_taxid",
+    "status": "rejected",
+    "expected_status": "rejected",
+    "status_match": true,
+    "blocking_reasons": [
+      "tax_id_format"
+    ],
+    "expected_reasons": [
+      "tax_id_format"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "Tax ID does not match the GSTIN format for country 'IN' (15-char GSTIN (2-digit state code + 10-char PAN + 3-char entity/check)) — cannot be verified"
+    ],
+    "expected_actions": [
+      "Tax ID does not match the GSTIN format for country 'IN' (15-char GSTIN (2-digit state code + 10-char PAN + 3-char entity/check)) — cannot be verified"
+    ],
+    "actions_match": true
+  },
+  {
+    "name": "eval_07_missing_taxid",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "tax_id_format"
+    ],
+    "expected_reasons": [
+      "tax_id_format"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "Tax ID is missing — please provide your registered tax ID"
+    ],
+    "expected_actions": [
+      "Tax ID is missing — please provide your registered tax ID"
+    ],
+    "actions_match": true
+  },
+  {
+    "name": "eval_08_unsupported_country",
+    "status": "rejected",
+    "expected_status": "rejected",
+    "status_match": true,
+    "blocking_reasons": [
+      "country_supported",
+      "tax_id_format"
+    ],
+    "expected_reasons": [
+      "country_supported"
+    ],
+    "reasons_match": false,
+    "vendor_actions": [
+      "Country 'FR' has no tax-ID rule (unsupported)",
+      "Tax ID present but country not recognised"
+    ],
+    "expected_actions": [
+      "Country 'FR' has no tax-ID rule (unsupported)"
+    ],
+    "actions_match": false
+  },
+  {
+    "name": "eval_09_pdf_unreadable",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_proof_document"
+    ],
+    "expected_reasons": [
+      "bank_proof_document"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "The uploaded PDF contains no readable text (image-only) - please provide a readable bank letter"
+    ],
+    "expected_actions": [
+      "The uploaded PDF contains no readable text (image-only) - please provide a readable bank letter"
+    ],
+    "actions_match": true
+  },
+  {
+    "name": "eval_10_pdf_multipage_match",
+    "status": "approved",
+    "expected_status": "approved",
+    "status_match": true,
+    "blocking_reasons": [],
+    "expected_reasons": [],
+    "reasons_match": true,
+    "vendor_actions": [],
+    "expected_actions": [],
+    "actions_match": true
+  },
+  {
+    "name": "eval_11_multi_issue_docs_account",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_account_match",
+      "documents_complete"
+    ],
+    "expected_reasons": [
+      "bank_account_match",
+      "documents_complete"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "Please provide your address proof and tax registration certificate.",
+      "Account number in submission (******9999) does NOT match the account in the bank letter (******7890) — payment account needs review"
+    ],
+    "expected_actions": [
+      "Please provide your address proof and tax registration certificate.",
+      "Account number in submission (******9999) does NOT match the account in the bank letter (******7890) — payment account needs review"
+    ],
+    "actions_match": true
+  },
+  {
+    "name": "eval_12_holder_and_docs",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_holder_match",
+      "bank_proof_document",
+      "documents_complete"
+    ],
+    "expected_reasons": [
+      "bank_holder_match",
+      "documents_complete"
+    ],
+    "reasons_match": false,
+    "vendor_actions": [
+      "Please provide your address proof and tax registration certificate.",
+      "Bank account holder does NOT match the legal name (possible mismatch)",
+      "Bank-proof document account holder 'Meridian Co' does NOT match the legal name — evidence conflicts with the submission"
+    ],
+    "expected_actions": [
+      "Please provide your address proof and tax registration certificate.",
+      "Bank account holder does NOT match the legal name (possible mismatch)"
+    ],
+    "actions_match": false
+  },
+  {
+    "name": "eval_13_formatted_account_match",
+    "status": "approved",
+    "expected_status": "approved",
+    "status_match": true,
+    "blocking_reasons": [],
+    "expected_reasons": [],
+    "reasons_match": true,
+    "vendor_actions": [],
+    "expected_actions": [],
+    "actions_match": true
+  },
+  {
+    "name": "eval_14_unicode_name_match",
+    "status": "approved",
+    "expected_status": "approved",
+    "status_match": true,
+    "blocking_reasons": [],
+    "expected_reasons": [],
+    "reasons_match": true,
+    "vendor_actions": [],
+    "expected_actions": [],
+    "actions_match": true
+  },
+  {
+    "name": "eval_15_empty_letter",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_proof_document"
+    ],
+    "expected_reasons": [
+      "bank_account_match",
+      "bank_proof_document"
+    ],
+    "reasons_match": false,
+    "vendor_actions": [
+      "No bank-proof document provided - please attach a bank letter/statement"
+    ],
+    "expected_actions": [
+      "No bank-proof document provided - please attach a bank letter/statement",
+      "No account number found in the bank letter to cross-check against"
+    ],
+    "actions_match": false
+  },
+  {
+    "name": "eval_16_punctuation_account",
+    "status": "pending",
+    "expected_status": "pending",
+    "status_match": true,
+    "blocking_reasons": [
+      "bank_account_present"
+    ],
+    "expected_reasons": [
+      "bank_account_present"
+    ],
+    "reasons_match": true,
+    "vendor_actions": [
+      "Bank account number is unreadable — please provide a readable account number"
+    ],
+    "expected_actions": [
+      "Bank account number is unreadable — please provide a readable account number"
+    ],
+    "actions_match": true
+  }
+]

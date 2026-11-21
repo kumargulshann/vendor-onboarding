@@ -1,0 +1,19 @@
+{
+  "name": "eval_06_malformed_taxid",
+  "pdf": null,
+  "data": {
+    "vendor_name": "Acme Manufacturing Pvt Ltd",
+    "legal_name": "Acme Manufacturing Pvt Ltd",
+    "country": "IN",
+    "tax_id": "12345",
+    "bank_holder_name": "Acme Manufacturing Pvt Ltd",
+    "bank_account_number": "1234567890",
+    "documents": [
+      "incorporation_proof",
+      "bank_proof",
+      "tax_registration",
+      "address_proof"
+    ],
+    "bank_proof_text": "Account holder: Acme Manufacturing Pvt Ltd\nAccount number: 1234567890"
+  }
+}

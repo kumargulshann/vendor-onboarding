@@ -1,0 +1,10 @@
+.git/
+.vercel/
+.env*
+.venv/
+venv/
+**/__pycache__/
+.pytest_cache/
+outputs/
+tests/
+data/eval/

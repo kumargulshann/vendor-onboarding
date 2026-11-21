@@ -1,0 +1,12 @@
+{
+  "vendor_name": "Sunrise Logistics LLC",
+  "legal_name": "Sunrise Logistics LLC",
+  "country": "US",
+  "tax_id": "12-3456789",
+  "contact_email": "payroll@sunrise.example",
+  "bank_holder_name": "Sunrise Logistics Holdings Corp",
+  "bank_account_number": "4455667788",
+  "bank_proof_text": "Bank statement\nAccount holder: Sunrise Logistics Holdings Corp\nAccount number: 4455667788",
+  "documents": ["incorporation_proof", "bank_proof", "tax_registration", "address_proof"],
+  "notes": "Only the account-holder identity differs from the registered legal name; the account number matches the letter."
+}

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Launch the Vendor Onboarding automated-review process.
+cd "$(dirname "$0")"
+exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000

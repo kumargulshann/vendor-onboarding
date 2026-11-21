@@ -1,0 +1,12 @@
+{
+  "vendor_name": "Nova Retail Group",
+  "legal_name": "Nova Retail Group Ltd",
+  "country": "GB",
+  "tax_id": "GB123456789",
+  "contact_email": "finance@nova.example",
+  "bank_holder_name": "Nova Retail Group Ltd",
+  "bank_account_number": "30094561",
+  "bank_proof_text": "Bank letter\nAccount holder: Nova Retail Group Ltd\nAccount number: 30094561",
+  "documents": ["incorporation_proof", "bank_proof"],
+  "notes": "Only the tax registration and address proof documents are missing; all identity and banking fields are valid."
+}

@@ -1,0 +1,12 @@
+{
+  "vendor_name": "Globex Trading Co",
+  "legal_name": "Globex Trading Co",
+  "country": "IN",
+  "tax_id": "GT12345",
+  "contact_email": "accounts@globex.in",
+  "bank_holder_name": "Globex Trading Co",
+  "bank_account_number": "9988776655",
+  "bank_proof_text": "Bank letter\nAccount holder: Globex Trading Co\nAccount number: 9988776655",
+  "documents": ["incorporation_proof", "bank_proof", "tax_registration", "address_proof"],
+  "notes": "Only the tax ID is malformed; everything else is valid and consistent."
+}

@@ -1,0 +1,19 @@
+{
+  "name": "eval_02_trading_legal_differ",
+  "pdf": null,
+  "data": {
+    "vendor_name": "Sunrise Logistics",
+    "legal_name": "Sunrise Logistics Ltd",
+    "country": "IN",
+    "tax_id": "29ABCDE1234F1Z5",
+    "bank_holder_name": "Sunrise Logistics Ltd",
+    "bank_account_number": "1234567890",
+    "documents": [
+      "incorporation_proof",
+      "bank_proof",
+      "tax_registration",
+      "address_proof"
+    ],
+    "bank_proof_text": "Account holder: Sunrise Logistics Ltd\nAccount number: 1234567890"
+  }
+}
