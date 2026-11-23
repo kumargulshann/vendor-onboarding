@@ -36,6 +36,8 @@
   .import-panel .ocr-confirmation[hidden]{display:none}
   .review-required{color:var(--amber)}
   .correction-hint{margin:10px 0 0}
+  .bank-preview{margin-top:10px}
+  .bank-preview button{width:auto;margin-top:6px;padding:7px 10px}
   .bank-comparison td,.bank-comparison th{overflow-wrap:anywhere}
   .bank-comparison .match{color:var(--green)}
   .bank-comparison .mismatch,.bank-comparison .wrong-document{color:var(--red)}
@@ -162,6 +164,10 @@
     <input type="file" id="bank_pdf" accept=".pdf,application/pdf" />
     <div id="evidenceInfo" class="muted" aria-live="polite" style="margin-top:4px"></div>
     <div class="muted">Use a bank letter or statement for this upload.</div>
+    <div id="bankPreview" class="bank-preview" hidden>
+      <div id="bankPreviewStatus" class="muted" role="status"></div>
+      <button type="button" id="applyBankDetails" hidden>Use bank details in declaration</button>
+    </div>
 
     <p class="muted">Document checklist. Mark the evidence you have supplied.</p>
     <div class="checks">
@@ -225,6 +231,8 @@ let dashboardGen = 0;
 let clearingHistory = false;
 const examples = new Map();
 let correctionDraft = null;   // the case and saved attempt this tab is editing
+let lastBankDeclaration = null; // only the last submitted declaration in this tab
+let bankPreview = null;
 const MAX_PDF_BYTES = 1000000; // must match app/pdf_evidence.py
 const importFields = {
   vendor_name: 'Vendor name',
@@ -414,6 +422,38 @@ function setEvidenceInfo(){
   }
 }
 
+function resetBankPreview(){
+  bankPreview = null;
+  $('bankPreview').hidden = true;
+  $('applyBankDetails').hidden = true;
+  $('bankPreviewStatus').textContent = '';
+}
+
+async function previewBankFile(file, gen){
+  $('bankPreview').hidden = false;
+  $('bankPreviewStatus').textContent = 'Reading account details from the selected bank PDF…';
+  const body = new FormData();
+  body.append('file', file);
+  try{
+    const response = await fetch('/api/preview-bank-proof', {method:'POST', body});
+    const details = await response.json();
+    if(gen !== evidenceGen || correctionDraft?.state !== 'open') return;
+    if(!response.ok) throw new Error(details.error || 'Could not read bank details.');
+    bankPreview = details;
+    const account = details.bank_account_number;
+    $('bankPreviewStatus').textContent = 'The PDF shows an account ending in '+account.slice(-4)
+      +' ('+account.length+' characters)'
+      +(details.bank_routing ? ' and IFSC '+details.bank_routing : '')
+      +'. Use these details only if they are the intended vendor declaration.';
+    $('applyBankDetails').hidden = false;
+    updateRunButton();
+  }catch(error){
+    if(gen === evidenceGen && correctionDraft?.state === 'open'){
+      $('bankPreviewStatus').textContent = error.message || 'Could not read bank details.';
+    }
+  }
+}
+
 async function loadExamples(){
   try{
     const response = await fetch('/api/examples');
@@ -448,7 +488,9 @@ $('example').addEventListener('change', (e)=>{
   // loading an example clears the file picker and starts fresh evidence
   $('bank_pdf').value = '';
   correctionDraft = null;
+  lastBankDeclaration = null;
   evidenceGen++;
+  resetBankPreview();
   evidenceState = { source: 'text', file: null, error: '' };
   showStatus('');
   setEvidenceInfo();
@@ -459,6 +501,7 @@ $('example').addEventListener('change', (e)=>{
 $('bank_pdf').addEventListener('change', (e)=>{
   const file = e.target.files[0];
   evidenceGen++;
+  resetBankPreview();
   if(!file){
     // explicitly cleared -> evidence returns to the pasted text, submission allowed
     evidenceState = { source: 'text', file: null, error: '' };
@@ -482,6 +525,7 @@ $('bank_pdf').addEventListener('change', (e)=>{
   setEvidenceInfo();
   if(correctionDraft?.state !== 'conflict') showStatus('');
   updateRunButton();
+  if(correctionDraft?.state === 'open') previewBankFile(file, evidenceGen);
 });
 
 function updateRunButton(){
@@ -502,6 +546,7 @@ function updateRunButton(){
   $('runBtn').disabled = running || clearingHistory || Boolean(hasInvalidFile())
     || Boolean(draft && draft.state !== 'open')
     || correctionNeedsEvidence() || unresolved.length > 0;
+  $('applyBankDetails').disabled = running || clearingHistory || draft?.state !== 'open';
   updateClearHistoryButton();
   updateImportButtons();
 }
@@ -527,11 +572,10 @@ function formFields(){
     expected_previous_run_id: correctionDraft?.runId || null
   };
 }
-function buildRunBody(){
+function buildRunBody(f){
   // PDF selected -> send file + form together (parsed once on the server)
   if(evidenceState.source === 'pdf' && evidenceState.file){
     const fd = new FormData();
-    const f = formFields();
     fd.append('vendor_name', f.vendor_name || '');
     fd.append('legal_name', f.legal_name || '');
     fd.append('country', f.country || '');
@@ -546,7 +590,7 @@ function buildRunBody(){
     fd.append('file', evidenceState.file);
     return { multipart: fd };
   }
-  return { json: { data: formFields() } };
+  return { json: { data: f } };
 }
 
 // --- genuinely live run via SSE (fetch + stream reader) --------------------
@@ -582,7 +626,8 @@ async function run(){
   let result = null;
   let savedCorrection = false;
   try{
-    const b = buildRunBody();
+    const submission = formFields();
+    const b = buildRunBody(submission);
     const opts = b.multipart
       ? { method: 'POST', body: b.multipart }
       : { method: 'POST', headers: {'Content-Type':'application/json'},
@@ -611,6 +656,13 @@ async function run(){
         }
         if(evt === 'result'){
           result = JSON.parse(data);
+          if(gen === evidenceGen || (draft && correctionDraft === draft)){
+            lastBankDeclaration = {
+              runId: result.id,
+              account: submission.bank_account_number,
+              routing: submission.bank_routing
+            };
+          }
           // Advance only after this tab receives its own saved correction.
           // A file selection made during the run can change the visible
           // draft, but it cannot undo the save the server just confirmed.
@@ -827,6 +879,7 @@ function startNewSubmission(announce = true){
   // their evidence: fields, account, pasted letter, file picker, checklist,
   // evidence state and the case link.
   correctionDraft = null;
+  lastBankDeclaration = null;
   resetOnboardingImport();
   $('example').value = '';
   ['vendor_name','legal_name','tax_id','contact_email',
@@ -837,6 +890,7 @@ function startNewSubmission(announce = true){
   document.querySelectorAll('.doc').forEach(c=>c.checked = false);
   $('bank_pdf').value = '';
   evidenceGen++;
+  resetBankPreview();
   evidenceState = { source: 'text', file: null, error: '' };
   setEvidenceInfo();
   updateRunButton();
@@ -868,15 +922,16 @@ function startCorrection(r){
   // restore this attempt's document checklist (only the original items stay
   // checked; missing-document issues clear only when the vendor supplies them)
   document.querySelectorAll('.doc').forEach(c=>c.checked = (inp.documents||[]).includes(c.value));
-  // sensitive fields require re-entry: a masked ending is NOT the real number
-  setField('bank_account_number', '');
-  setField('bank_routing', '');
+  const submitted = lastBankDeclaration?.runId === r.id ? lastBankDeclaration : null;
+  setField('bank_account_number', submitted?.account);
+  setField('bank_routing', submitted?.routing);
   $('routingHint').textContent = (r.checks||[]).some(c=>c.name === 'bank_ifsc_match')
-    ? 'Re-enter the full IFSC and supply a bank letter showing it for this correction.'
+    ? 'Review the declared IFSC against the replacement bank letter.'
     : '';
   setField('bank_proof_text', '');
   $('bank_pdf').value = '';
   evidenceGen++;
+  resetBankPreview();
   evidenceState = { source: 'text', file: null, error: '' };
   setEvidenceInfo();
   updateRunButton();
@@ -900,6 +955,7 @@ async function clearHistory(){
     const result = await response.json();
     if(response.ok || result.deleted){
       historyGen++;
+      lastBankDeclaration = null;
       if(correctionDraft) startNewSubmission(false);
       $('result').replaceChildren();
       $('stagelist').textContent = 'Run the process to see each stage execute in real time.';
@@ -967,6 +1023,14 @@ async function showRun(id, focusResult = false){
 }
 
 $('runBtn').addEventListener('click', run);
+$('applyBankDetails').addEventListener('click', ()=>{
+  if(!bankPreview || $('applyBankDetails').disabled) return;
+  setField('bank_account_number', bankPreview.bank_account_number);
+  if(bankPreview.bank_routing) setField('bank_routing', bankPreview.bank_routing);
+  $('bankPreviewStatus').textContent = 'Bank details copied into the declaration. Review them before running.';
+  $('applyBankDetails').hidden = true;
+  $('bank_account_number').focus();
+});
 $('clearHistoryBtn').addEventListener('click', clearHistory);
 for(const key of Object.keys(importFields)){
   const note = document.createElement('div');

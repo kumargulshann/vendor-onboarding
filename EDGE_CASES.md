@@ -28,9 +28,12 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
    bank evidence separately.
 3. Upload the case’s PDF under **Bank-proof PDF upload** and click **Run process**.
 
-When correcting a case, click **Correct and resubmit** on the latest attempt,
-re-enter account `001234567890`, and attach the specified evidence. Use current
-IFSC `DEMO0001234` unless the test calls for a blank IFSC.
+When correcting a case, click **Correct and resubmit** on the latest attempt
+and attach the specified evidence. In the same tab, the app keeps the banking
+fields from the last saved declaration. For a reopened draft, choose **Use bank
+details in declaration** to copy the account and IFSC from a readable letter
+after confirming those are the intended values. For Juniper, verify account
+`001234567890` and IFSC `DEMO0001234` unless the test calls for a blank IFSC.
 
 For a happy-path comparison, run the same form with all four boxes checked
 and the [current bank confirmation](output/pdf/juniper_bank_account_confirmation.pdf).
@@ -104,7 +107,7 @@ the previous branch code. Both sources identify the same payment account.
 
 1. Run the [confirmation with the old IFSC](output/pdf/juniper_bank_ifsc_mismatch.pdf).
 2. Correct the case with the [current bank confirmation](output/pdf/juniper_bank_account_confirmation.pdf).
-   Re-enter the account number and leave the form’s IFSC blank.
+   Confirm the account number and clear the form’s IFSC before running.
 3. In the same tab, keep the current confirmation selected, enter
    `DEMO0001234`, and click **Run process** to save attempt 3.
 

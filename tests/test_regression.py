@@ -736,6 +736,31 @@ def test_onboarding_form_cannot_be_reused_as_bank_proof():
     assert "separate bank letter" in run["vendor_messages"][0]["message"]
 
 
+def test_bank_proof_preview_preserves_leading_zeros_and_rejects_ambiguous_evidence():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    demo = DATA.parent / "output" / "pdf"
+    with TestClient(app) as client:
+        count = client.get("/api/runs").json()["count"]
+        for path, error in (
+            (demo / "juniper_bank_account_confirmation.pdf", None),
+            (demo / "juniper_conflicting_bank_confirmations.pdf", "conflicting account numbers"),
+            (DATA / "pdf" / "vendor_onboarding_sample.pdf", "onboarding form"),
+        ):
+            response = client.post("/api/preview-bank-proof", files={
+                "file": (path.name, path.read_bytes(), "application/pdf"),
+            })
+            assert response.headers["cache-control"] == "no-store"
+            if error:
+                assert response.status_code == 400 and error in response.json()["error"]
+                assert "bank_account_number" not in response.json()
+            else:
+                assert response.status_code == 200
+                assert response.json() == {"bank_account_number": "001234567890", "bank_routing": "DEMO0001234"}
+        assert client.get("/api/runs").json()["count"] == count
+
+
 def test_ifsc_comparison_uses_both_sources_without_exposing_full_banking_values():
     letter = BASE["bank_proof_text"]
     for routing, proof, expected_status, expected_ifsc in (

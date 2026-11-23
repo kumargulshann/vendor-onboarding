@@ -4,6 +4,7 @@ FastAPI app: exposes the process + a single-page UI.
 Endpoints:
 - GET  /                     -> the UI (live run view + dashboard)
 - POST /api/import-onboarding -> suggest editable fields from a vendor onboarding PDF
+- POST /api/preview-bank-proof -> suggest banking fields from an uploaded letter
 - POST /api/run             -> run a submission (JSON text evidence OR multipart file+form)
 - POST /api/run/stream      -> run a submission, streaming each stage live (SSE)
 - GET  /api/cases           -> cases grouped with their attempts (reviewer view)
@@ -34,7 +35,7 @@ try:
 except ImportError:  # Older python-multipart releases export the original package name.
     from multipart.exceptions import MultipartParseError
 
-from .models import VendorSubmission
+from .models import VendorSubmission, parse_bank_letter
 from .form_import import import_onboarding_form
 from .runner import (run_process, list_runs, get_run, list_cases, get_case,
                      clear_run_history, CorrectionConflict)
@@ -149,27 +150,50 @@ def api_examples():
     return {"examples": examples}
 
 
-@app.post("/api/import-onboarding")
-async def api_import_onboarding(request: Request):
+async def _pdf_preview(request: Request, document: str, parse):
     headers = {"Cache-Control": "no-store"}
     try:
         if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
-            raise SubmissionError("Choose one vendor onboarding form PDF.")
+            raise SubmissionError(f"Choose one {document} PDF.")
         body = await _bounded_body(
-            request, MAX_PDF_BYTES + 16_384, "Upload an onboarding PDF that is 1 MB or smaller.",
+            request, MAX_PDF_BYTES + 16_384, f"Upload a PDF for the {document} that is 1 MB or smaller.",
         )
         async with _multipart_request(request, body).form(max_files=1, max_fields=0) as form:
             upload = form.get("file")
             if not isinstance(upload, UploadFile) or not upload.filename:
-                raise SubmissionError("Choose one vendor onboarding form PDF.")
+                raise SubmissionError(f"Choose one {document} PDF.")
             content = await upload.read(MAX_PDF_BYTES + 1)
-        result = await run_in_threadpool(import_onboarding_form, content)
+        result = await run_in_threadpool(parse, content)
     except (HTTPException, MultipartParseError):
         return JSONResponse({"error": "The form upload could not be read. Choose one PDF."},
                             status_code=400, headers=headers)
     except (PdfEvidenceError, SubmissionError) as error:
         return JSONResponse({"error": str(error)}, status_code=400, headers=headers)
     return JSONResponse(result, headers=headers)
+
+
+@app.post("/api/import-onboarding")
+async def api_import_onboarding(request: Request):
+    return await _pdf_preview(request, "vendor onboarding form", import_onboarding_form)
+
+
+def _bank_proof_fields(content: bytes) -> dict:
+    evidence = parse_bank_letter(extract_pdf_text(content)["text"])
+    if evidence["kind"] == "vendor_declaration":
+        raise PdfEvidenceError("This is an onboarding form. Choose a separate bank letter or statement.")
+    if evidence["account_conflict"]:
+        raise PdfEvidenceError("The bank proof contains conflicting account numbers.")
+    account = evidence["account"]
+    if not evidence["holder"] or not account or not 5 <= len(account) <= 500:
+        raise PdfEvidenceError("A readable account holder and one complete account number are required.")
+    if evidence["ifsc_listed"] and not evidence["ifsc"]:
+        raise PdfEvidenceError("The bank proof has conflicting or unreadable IFSC information.")
+    return {"bank_account_number": account, "bank_routing": evidence["ifsc"]}
+
+
+@app.post("/api/preview-bank-proof")
+async def api_preview_bank_proof(request: Request):
+    return await _pdf_preview(request, "bank letter", _bank_proof_fields)
 
 
 @app.post("/api/run")
