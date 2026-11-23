@@ -2,7 +2,7 @@
 Vendor onboarding domain model + input schema.
 
 A "vendor submission" is the real input the process accepts. In a demo you can
-submit this as JSON (a form) or drop a JSON file into submissions/.
+submit it through the website or the JSON API.
 """
 from __future__ import annotations
 import re
@@ -36,7 +36,7 @@ class VendorSubmission:
     # --- banking (payment) ---
     bank_holder_name: Optional[str] = None # name on the bank account
     bank_account_number: Optional[str] = None
-    bank_routing: Optional[str] = None     # IFSC/ABA/etc, loosely validated
+    bank_routing: Optional[str] = None     # IFSC for Indian accounts
     bank_proof_text: Optional[str] = None  # sample bank-proof letter (text)
     bank_evidence_source: str = "text"     # "text" (pasted) or "pdf" (uploaded)
     case_id: Optional[str] = None          # set to correct/append to an existing case
@@ -78,33 +78,33 @@ DOCUMENT_LABELS = {
 # for messier, real-world letters without changing the decision logic.
 _HOLDER_LABELS = [
     "account holder name", "name of account holder", "account holder",
-    "accountholder", "name on account", "beneficiary", "titled to",
+    "bank account holder name", "bank account holder", "accountholder",
+    "name on account", "beneficiary", "titled to",
 ]
 _ACCOUNT_LABELS = [
     "account number", "account no", "account no.", "account #",
-    "acc no", "account number",
+    "bank account number", "bank account no.", "bank account no", "acc no",
 ]
+_IFSC_LABELS = ["ifsc code of branch", "branch ifsc", "ifsc code", "ifsc"]
+_EMPTY_FIELD_VALUES = {"", "n/a", "na", "not applicable", "none"}
+_VENDOR_FORM_TITLE = re.compile(
+    r"(?im)^[ \t]*(?:vendor|supplier)[ \t]+"
+    r"(?:onboarding(?:[ \t]+details)?|registration)[ \t]+forms?[ \t:]*$"
+)
 
 
-def _find_label_value(text: str, labels: list[str]) -> Optional[str]:
-    """
-    Find the first matching label and return the value that follows it.
-    Labels are tried longest-first so 'account holder name:' matches the full
-    label rather than stopping at 'account holder' and swallowing 'name:'.
+def is_vendor_declaration(text: str) -> bool:
+    """Recognize the onboarding declaration without matching a letter's addressee."""
+    return bool(_VENDOR_FORM_TITLE.search(text))
 
-    The value is captured up to a newline or semicolon, so punctuation that is
-    part of a name (e.g. the comma in 'Harbor Tools, Inc.') is preserved.
-    """
-    if not text:
-        return None
-    for label in sorted(labels, key=len, reverse=True):
-        m = re.search(re.escape(label) + r"\s*[:\-#]?\s*([^\n;]{1,120})",
-                      text, re.IGNORECASE)
-        if m:
-            val = m.group(1).strip().strip(":").strip()
-            if val:
-                return val
-    return None
+
+def _label_values(text: str, labels: list[str]) -> list[str]:
+    alternatives = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+    pattern = (
+        rf"(?im)^[^\S\r\n]*(?:{alternatives})"
+        r"(?:[^\S\r\n]*[:#–—-][^\S\r\n]*|[^\S\r\n]+)([^\r\n;]+)"
+    )
+    return [match.strip() for match in re.findall(pattern, text)]
 
 
 def normalize_name(s: str) -> str:
@@ -123,8 +123,15 @@ def normalize_name(s: str) -> str:
 
 
 def extract_bank_holder(text: str) -> Optional[str]:
-    """Return the account-holder name found in a bank-proof letter, or None."""
-    return _find_label_value(text or "", _HOLDER_LABELS)
+    """Return a single unambiguous holder from the letter."""
+    holders = _label_values(text or "", _HOLDER_LABELS)
+    if not holders or any(
+        len(name) > 120 or not any(ch.isalpha() for ch in name)
+        or re.search(r"\d(?:[ .-]*\d){3,}", name)
+        for name in holders
+    ):
+        return None
+    return holders[0] if len({normalize_name(name) for name in holders}) == 1 else None
 
 
 def normalize_account(value: str | None) -> str:
@@ -136,22 +143,52 @@ def normalize_account(value: str | None) -> str:
     etc.), and returns "" for empty, whitespace-only, or punctuation-only input
     (e.g. an em dash) so it is treated as missing/unreadable.
     """
-    if value is None:
+    if not value or not re.fullmatch(r"[A-Za-z0-9 \t\u00a0.–—-]+", value.strip()):
         return ""
-    return re.sub(r"[^0-9A-Za-z]", "", value)
+    normalized = re.sub(r"[^0-9A-Za-z]", "", value).upper()
+    if re.fullmatch(r"X{3,}\d{1,4}", normalized):
+        return ""
+    return normalized if any(ch.isdigit() for ch in normalized) else ""
+
+
+def _bank_account_details(text: str) -> tuple[str | None, bool]:
+    """Return the single usable account and whether readable accounts conflict."""
+    accounts = {normalize_account(value) for value in _label_values(text or "", _ACCOUNT_LABELS)}
+    readable = accounts - {""}
+    account = next(iter(readable)) if len(readable) == len(accounts) == 1 else None
+    return account, len(readable) > 1
 
 
 def extract_bank_account(text: str) -> Optional[str]:
     """Return the normalized account number found in a bank-proof letter, or None."""
-    val = _find_label_value(text or "", _ACCOUNT_LABELS)
-    return normalize_account(val) or None
+    account, _ = _bank_account_details(text)
+    return account
+
+
+def normalize_ifsc(value: str | None) -> str | None:
+    normalized = re.sub(r"[ \t\u00a0]", "", value or "").upper()
+    return normalized if re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", normalized) else None
 
 
 def parse_bank_letter(text: str) -> dict:
-    """Parse holder + account number from a bank letter in one pass."""
+    """Build the bank evidence shared by the rules, result, and saved record."""
+    if is_vendor_declaration(text):
+        return {"kind": "vendor_declaration", "holder": None, "account": None,
+                "account_conflict": False, "ifsc": None, "ifsc_listed": False}
+    account, account_conflict = _bank_account_details(text)
+    ifsc_values = [
+        value for value in _label_values(text, _IFSC_LABELS)
+        if value.strip(" :-–—").casefold() not in _EMPTY_FIELD_VALUES
+    ]
+    ifsc_candidates = {normalize_ifsc(value) for value in ifsc_values}
+    ifsc = next(iter(ifsc_candidates)) if len(ifsc_candidates) == 1 else None
     return {
+        "kind": "bank_proof" if text.strip() else "none",
         "holder": extract_bank_holder(text),
-        "account": extract_bank_account(text),
+        "account": account,
+        "account_conflict": account_conflict,
+        "ifsc": ifsc,
+        "ifsc_listed": bool(ifsc_values),
     }
 
 

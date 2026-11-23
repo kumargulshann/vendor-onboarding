@@ -22,9 +22,10 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
-from .models import VendorSubmission, DOCUMENT_LABELS, mask_ending, normalize_account
+from .models import (VendorSubmission, DOCUMENT_LABELS, mask_ending, normalize_account,
+                     normalize_ifsc, normalize_name, parse_bank_letter)
 from .rules import validate
-from .ai_layer import reason, parse_bank_letter
+from .ai_layer import reason
 
 BASE = Path(__file__).resolve().parent.parent
 DEFAULT_RUN_DIR = (
@@ -63,7 +64,7 @@ def _mask_input(d: dict) -> dict:
     """Return a copy of the submission with bank-sensitive fields masked and the
     full bank letter removed (replaced by a safe summary)."""
     m = dict(d)
-    m["bank_account_number"] = _mask_account(m.get("bank_account_number"))
+    m["bank_account_number"] = _mask_account(normalize_account(m.get("bank_account_number")))
     m["bank_routing"] = _mask_account(m.get("bank_routing"))
     # remove the raw letter; it is summarised separately
     m.pop("bank_proof_text", None)
@@ -83,10 +84,20 @@ def _build_bank_proof_summary(sub: VendorSubmission, rule, evidence: dict) -> di
     form_acc_norm = normalize_account(raw_form_acc)
     by_name = next((c for c in rule.checks if c.name == "bank_proof_document"), None)
     by_acc = next((c for c in rule.checks if c.name == "bank_account_match"), None)
+    by_ifsc = next((c for c in rule.checks if c.name == "bank_ifsc_match"), None)
+    declared_ifsc = normalize_ifsc(sub.bank_routing) if sub.country == "IN" or by_ifsc else None
+    letter_ifsc = evidence.get("ifsc")
+    declared_holder = normalize_name(sub.bank_holder_name)
+    proof_holder = normalize_name(letter_holder)
+    holder_outcome = "not comparable"
+    if declared_holder and proof_holder:
+        holder_outcome = "match" if declared_holder == proof_holder else "mismatch"
 
     if not form_acc_norm:
         # no readable account to compare — distinguish truly empty vs punctuation
         account_outcome = "missing" if not raw_form_acc.strip() else "unreadable"
+    elif evidence.get("account_conflict"):
+        account_outcome = "conflicting numbers"
     elif not letter_acc:
         account_outcome = "not comparable"   # form has one, letter doesn't
     elif by_acc and by_acc.passed:
@@ -95,7 +106,9 @@ def _build_bank_proof_summary(sub: VendorSubmission, rule, evidence: dict) -> di
         account_outcome = "mismatch"
 
     source = (sub.bank_evidence_source or "text").lower()
-    if not sub.bank_proof_text:
+    if evidence.get("kind") == "vendor_declaration":
+        name_outcome = "wrong document"
+    elif not sub.bank_proof_text:
         name_outcome = "unreadable" if source == "pdf" else "missing"
     elif not letter_holder:
         name_outcome = "unreadable"
@@ -104,13 +117,26 @@ def _build_bank_proof_summary(sub: VendorSubmission, rule, evidence: dict) -> di
     else:
         name_outcome = "mismatch"
 
+    ifsc_outcome = "not compared"
+    if by_ifsc:
+        ifsc_outcome = (
+            ("match" if by_ifsc.passed else "mismatch")
+            if declared_ifsc and letter_ifsc else "not comparable"
+        )
+
     return {
         "source": source,
+        "proof_kind": evidence.get("kind"),
+        "form_holder": sub.bank_holder_name,
         "holder_extracted": letter_holder,
-        "form_account_masked": _mask_account(raw_form_acc),
+        "form_account_masked": _mask_account(form_acc_norm),
         "letter_account_masked": _mask_account(letter_acc),
         "name_outcome": name_outcome,
+        "holder_outcome": holder_outcome,
         "account_outcome": account_outcome,
+        "form_ifsc_masked": _mask_account(declared_ifsc),
+        "letter_ifsc_masked": _mask_account(letter_ifsc),
+        "ifsc_outcome": ifsc_outcome,
         "reason": by_name.detail if by_name else "No bank-proof document provided.",
     }
 
@@ -137,7 +163,7 @@ def _vendor_messages(sub: VendorSubmission, rule) -> list[dict]:
 
     order = ["vendor_name_present", "country_supported", "tax_id_format",
              "bank_holder_present", "bank_account_present", "bank_holder_match",
-             "bank_proof_document", "bank_account_match"]
+             "bank_proof_document", "bank_account_match", "bank_ifsc_match"]
 
     for name in order:
         if name not in failed:
@@ -165,10 +191,14 @@ def decide(rule) -> str:
 def _load_saved_runs() -> None:
     """Load run summaries from disk so history survives a restart."""
     loaded = []
-    for p in sorted(OUT_DIR.glob("*.json")):
+    for p in sorted(OUT_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime_ns):
         try:
-            loaded.append(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
+            record = json.loads(p.read_text(encoding="utf-8"))
+            if (isinstance(record, dict) and record.get("id") == p.stem
+                    and record.get("status") in ("approved", "pending", "rejected")
+                    and isinstance(record.get("input"), dict)):
+                loaded.append(record)
+        except (OSError, ValueError):
             continue
     with _lock:
         _runs.clear()
@@ -273,7 +303,15 @@ def run_process(submission: VendorSubmission, run_id: str | None = None,
     evidence = parse_bank_letter(submission.bank_proof_text or "")
 
     # Stage 2 — deterministic validation
-    rule = validate(submission, evidence)
+    # The predecessor is immutable. The save step still checks that it is the
+    # latest pending attempt of the same case before it accepts a correction.
+    require_ifsc = False
+    if submission.expected_previous_run_id:
+        with _lock:
+            previous = next((r for r in _runs if r["id"] == submission.expected_previous_run_id
+                             and r.get("case_id") == submission.case_id), None)
+        require_ifsc = any(c["name"] == "bank_ifsc_match" for c in (previous or {}).get("checks", []))
+    rule = validate(submission, evidence, require_ifsc=require_ifsc)
     stage("validate",
           f"{len(rule.checks)} checks run — "
           f"{len(rule.errors)} blocking, {len(rule.warnings)} warnings")
@@ -282,14 +320,17 @@ def run_process(submission: VendorSubmission, run_id: str | None = None,
     status = decide(rule)
     stage("decision", f"Status determined: {status}")
 
-    # Stage 4 — AI reasoning layer
-    r = reason(rule)
-    stage("ai_reasoning",
-          "AI reasoning generated" if r["used_ai"]
-          else "Deterministic reasoning (AI layer not wired)")
-
-    # Vendor-facing actionable messages
     vendor_messages = _vendor_messages(submission, rule)
+
+    # Stage 4 — explain the decision from the validation results
+    explanation_stage = "Explanation generated from validation checks."
+    r = reason(rule, status=status, actionable_checks={message["check"] for message in vendor_messages})
+    if r["used_ai"]:
+        explanation_stage = f"{r['provider']} summary generated from validation checks."
+    elif r["ai_attempted"]:
+        explanation_stage = f"{r['provider']} summary unavailable. Used the built-in explanation."
+    stage("ai_reasoning", explanation_stage)
+
     needed = [m["message"] for m in vendor_messages] if status != "approved" else []
 
     run = {
@@ -320,12 +361,35 @@ def list_runs() -> list[dict]:
         return list(reversed(_runs))
 
 
-def _refresh_correction_allowed(run: dict) -> dict:
+def clear_run_history() -> tuple[int, int]:
+    """Remove saved runs and return the number deleted and the number retained."""
+    with _lock:
+        deleted = 0
+        # Delete newest first so a file error leaves earlier attempts available.
+        while _runs:
+            run = _runs[-1]
+            try:
+                (OUT_DIR / f"{run['id']}.json").unlink(missing_ok=True)
+            except OSError:
+                break
+            _runs.pop()
+            deleted += 1
+        return deleted, len(_runs)
+
+
+def _run_view(run: dict) -> dict:
     """
-    Recompute whether this attempt may be corrected. Only the LATEST attempt
-    of a case can be corrected, and only when it is pending. A stored flag can
-    go stale when newer attempts are added, so recompute against current state.
+    Build the current view from saved attempts without changing their records.
     """
+    run = dict(run)
+    if "stages" in run:
+        run["stages"] = [
+            {**stage, "detail": "Explanation generated from validation checks."}
+            if stage.get("stage") == "ai_reasoning"
+            and stage.get("detail") == "Deterministic reasoning (AI layer not wired)"
+            else stage
+            for stage in run["stages"]
+        ]
     case_id = run.get("case_id")
     if not case_id:
         run["correction_allowed"] = False
@@ -337,6 +401,10 @@ def _refresh_correction_allowed(run: dict) -> dict:
         latest is not None and run["id"] == latest["id"]
         and run.get("status") == "pending"
     )
+    if run.get("previous_run_id"):
+        previous = next((r for r in same_case if r["id"] == run["previous_run_id"]), None)
+        if previous is not None:
+            run["comparison"] = build_comparison(run, previous)
     return run
 
 
@@ -344,17 +412,11 @@ def get_run(run_id: str) -> dict | None:
     with _lock:
         for r in _runs:
             if r["id"] == run_id:
-                out = dict(r)   # copy; refresh needs the lock itself
+                out = r
                 break
         else:
             out = None
-    if out is None:
-        p = OUT_DIR / f"{run_id}.json"
-        if not p.exists():
-            return None
-        out = json.loads(p.read_text(encoding="utf-8"))
-    # refresh outside the lock to avoid a non-reentrant deadlock
-    return _refresh_correction_allowed(out)
+    return _run_view(out) if out is not None else None
 
 
 
@@ -363,6 +425,8 @@ def _check_phrase(name, passed):
     phrases = {
         "bank_account_match": ("the submitted account matched the new evidence",
                                "the submitted account differed from the bank letter"),
+        "bank_ifsc_match": ("the submitted IFSC matched the bank letter",
+                            "the submitted IFSC differed from the bank letter"),
         "bank_proof_document": ("the bank-proof document matched the submission",
                                "the bank-proof document did not match the submission"),
         "documents_complete": ("all required documents were provided",
@@ -410,11 +474,27 @@ def build_comparison(current: dict, previous: dict | None) -> dict | None:
     # never block, so only blocking errors appear as blockers.
     cur_failed = [c for c in current.get("checks", [])
                   if not c.get("passed") and c.get("severity", "error") == "error"]
-    cur_blockers = [_check_phrase(c["name"], False) for c in cur_failed]
-    prev_failed = [c for c in previous.get("checks", [])
-                   if not c.get("passed") and c.get("severity", "error") == "error"]
-    prev_reasons = [_check_phrase(c["name"], False) for c in prev_failed]
-
+    evidence = current.get("bank_proof_summary") or {}
+    if evidence.get("name_outcome") == "missing":
+        proof_blocker = "no bank letter was supplied"
+    elif evidence.get("name_outcome") == "wrong document":
+        proof_blocker = "the submission needs a separate bank letter or statement"
+    elif evidence.get("name_outcome") == "unreadable":
+        proof_blocker = "the bank letter did not contain a readable account-holder name"
+    else:
+        proof_blocker = _check_phrase("bank_proof_document", False)
+    account_blocker = {
+        "not comparable": "the bank letter had no readable account number",
+        "conflicting numbers": "the bank proof contained conflicting account numbers",
+    }.get(evidence.get("account_outcome"), _check_phrase("bank_account_match", False))
+    cur_blockers = [
+        proof_blocker if c["name"] == "bank_proof_document"
+        else account_blocker if c["name"] == "bank_account_match"
+        else "a readable IFSC is required on both sides of the comparison"
+        if c["name"] == "bank_ifsc_match" and evidence.get("ifsc_outcome") == "not comparable"
+        else _check_phrase(c["name"], False)
+        for c in cur_failed
+    ]
     cur_n = current.get("attempt_number")
     prev_n = previous.get("attempt_number", 1)
     ts_txt = (f"Attempt {prev_n} at {previous.get('created_at')} \u2192 "
@@ -422,6 +502,8 @@ def build_comparison(current: dict, previous: dict | None) -> dict | None:
 
     if current.get("status") == "approved":
         head = f"Attempt {cur_n} was approved"
+    elif current.get("status") == "rejected":
+        head = f"Attempt {cur_n} was rejected because {'; '.join(cur_blockers)}"
     elif cur_blockers:
         head = f"Attempt {cur_n} is still held because {'; '.join(cur_blockers)}"
     else:
@@ -498,7 +580,7 @@ def get_case(case_id):
     if not runs:
         return None
     runs.sort(key=lambda x: x.get("attempt_number", 1))
-    runs = [_refresh_correction_allowed(r) for r in runs]
+    runs = [_run_view(r) for r in runs]
     return {
         "case_id": case_id,
         "vendor": runs[0].get("input", {}).get("vendor_name", ""),

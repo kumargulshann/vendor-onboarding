@@ -81,6 +81,7 @@ def main():
         pg.click("#runBtn")
         wait_badge("PENDING")
         att1_case = case_line()
+        att1 = json.loads(pg.inner_text("#log"))
         print("(a) attempt 1:", badge(), "|", att1_case)
         assert badge() == "PENDING" and "attempt 1" in att1_case
 
@@ -94,6 +95,7 @@ def main():
         pg.click("#runBtn")
         wait_badge("APPROVED")
         att2_case = case_line()
+        att2 = json.loads(pg.inner_text("#log"))
         print("(b) attempt 2:", badge(), "|", att2_case)
         assert badge() == "APPROVED" and "attempt 2" in att2_case
 
@@ -116,10 +118,7 @@ def main():
         assert len(attempts_found) >= 2
 
         # open attempt 1 row -> pending
-        for r in rows:
-            if "attempt 1" in r.inner_text():
-                r.click()
-                break
+        pg.locator(f'[data-run-id="{att1["id"]}"]').click()
         pg.wait_for_function(
             "() => { const e=document.querySelector('#result .pill');"
             " return !!e && e.innerText.trim().toUpperCase()==='PENDING'; }")
@@ -127,10 +126,7 @@ def main():
         print("    re-opened attempt 1 ->", badge(), case_line())
 
         # open attempt 2 row -> approved
-        for r in pg.query_selector_all("#dashTable tbody tr"):
-            if "attempt 2" in r.inner_text():
-                r.click()
-                break
+        pg.locator(f'[data-run-id="{att2["id"]}"]').click()
         pg.wait_for_function(
             "() => { const e=document.querySelector('#result .pill');"
             " return !!e && e.innerText.trim().toUpperCase()==='APPROVED'; }")
@@ -138,16 +134,12 @@ def main():
         print("    re-opened attempt 2 ->", badge(), case_line())
 
         # --- (d) insufficient correction -> still pending -------------------
-        # reopen attempt 1 (pending) to get the Correct button, then resubmit
-        # with a still-wrong account
-        for r in pg.query_selector_all("#dashTable tbody tr"):
-            if "attempt 1" in r.inner_text():
-                r.click()
-                break
-        pg.wait_for_function(
-            "() => { const e=document.querySelector('#result .pill');"
-            " return !!e && e.innerText.trim().toUpperCase()==='PENDING'; }")
-        assert badge() == "PENDING"
+        # Use a separate case since the original case is closed after approval.
+        pg.select_option("#example", "edge_account_mismatch")
+        pg.click("#runBtn")
+        wait_badge("PENDING")
+        pending = json.loads(pg.inner_text("#log"))
+        c1 = pending["case_id"]
         pg.click("#correctBtn")
         pg.wait_for_timeout(200)
         pg.fill("#bank_account_number", "1111111111")      # still wrong
@@ -156,7 +148,7 @@ def main():
         pg.click("#runBtn")
         wait_badge("PENDING")
         print("(d) insufficient correction ->", badge(), "|", case_line())
-        assert badge() == "PENDING" and "attempt 3" in case_line()
+        assert badge() == "PENDING" and "attempt 2" in case_line()
 
         # --- (e) double-click creates exactly one attempt ------------------
         before = get("/api/cases/" + c1)["attempt_count"]

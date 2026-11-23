@@ -13,7 +13,7 @@ Flows verified:
   (g) correction restores the attempt's document checklist (only original items)
 """
 import json
-import os
+from pathlib import Path
 import urllib.request
 from playwright.sync_api import sync_playwright
 
@@ -24,12 +24,11 @@ ACCOUNT_FULL = "1234567890"
 LETTER_MARK = "BANK OF TEST"
 
 # an oversized file: a real PDF padded well past 1 MB
-BIG_PDF = "/tmp/oversized_letter.pdf"
-if not os.path.exists(BIG_PDF):
-    data = open(f"{PDF}/pdf_two_page_match.pdf", "rb").read()
-    pad = b"0" * (1_100_000 - len(data))
-    with open(BIG_PDF, "wb") as f:
-        f.write(data + pad)
+BIG_PDF = {
+    "name": "oversized_letter.pdf",
+    "mimeType": "application/pdf",
+    "buffer": Path(MATCH).read_bytes().ljust(1_100_000, b"0"),
+}
 
 
 def post(path, data):
@@ -105,24 +104,14 @@ def main():
         att2_run_id = pg.inner_text("#log").split('"id": "')[1].split('"')[0]
         rt = result_text()
         print("(a) attempt 2:", badge())
-        assert "Attempt 1 was held because the submitted account differed from the bank letter." in rt
-        assert "On attempt 2, the submitted account matched the new evidence." in rt
-        assert "What changed" in rt
+        assert "Attempt 2 was approved" in rt
+        assert "the submitted account matched the new evidence" in rt
+        assert "Reviewer comparison" in rt
         print("    comparison summary present")
 
         # --- (b) missing documents corrected to approved -------------------
         # click the SEEDED 2-doc attempt by its run id, correct with all docs
-        pg.wait_for_function(
-            "id => !!document.querySelector('#dashTable tbody tr[onclick*=\\''+id+'\\']'"
-            " || [...document.querySelectorAll('#dashTable tbody tr')]"
-            ".some(tr => tr.innerText.includes(id)))", arg=seeded_att1_id)
-        target_row = None
-        for r in pg.query_selector_all("#dashTable tbody tr"):
-            if seeded_att1_id in r.inner_text():
-                target_row = r
-                break
-        assert target_row is not None, "seeded attempt row not found"
-        target_row.click()
+        pg.locator(f'[data-run-id="{seeded_att1_id}"]').click()
         wait_badge("PENDING")
         # the correction should restore ONLY the original two documents
         pg.click("#correctBtn")
@@ -163,7 +152,8 @@ def main():
         wait_badge("PENDING")
         rt = result_text()
         print("(c) incomplete correction ->", badge())
-        assert "the same issue remains unresolved" in rt
+        assert "is still held because" in rt
+        assert "No check outcome changed" in rt
 
         # --- (d) open attempts both directions ------------------------------
         # open attempt 1 (pending) by run id -> standalone view + its stages
@@ -187,7 +177,7 @@ def main():
             arg=att2_run_id)
         wait_badge("APPROVED")
         rt2 = result_text()
-        assert "What changed" in rt2
+        assert "Reviewer comparison" in rt2
         assert "matched the new evidence" in rt2
         print("(d) attempt 2 view:", badge(), "| comparison present")
 

@@ -28,6 +28,18 @@
     color:var(--text);border-radius:8px;padding:8px 10px;font-size:14px}
   textarea{min-height:70px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .import-panel{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:16px}
+  .import-panel button{width:auto;padding:8px 12px;margin:8px 6px 0 0}
+  .import-panel td{overflow-wrap:anywhere}
+  .import-panel .ocr-confirmation{margin-top:10px;color:var(--text)}
+  .import-panel .ocr-confirmation input{width:auto;margin-right:6px}
+  .import-panel .ocr-confirmation[hidden]{display:none}
+  .review-required{color:var(--amber)}
+  .bank-comparison td,.bank-comparison th{overflow-wrap:anywhere}
+  .bank-comparison .match{color:var(--green)}
+  .bank-comparison .mismatch,.bank-comparison .wrong-document{color:var(--red)}
+  .field-source{margin-top:3px}
+  .import-status{margin:8px 0 0}
   .checks{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px}
   .checks label{display:flex;align-items:center;gap:6px;background:var(--panel2);
     border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;
@@ -37,6 +49,9 @@
     margin-top:18px;transition:filter .15s}
   button:hover{filter:brightness(1.08)}
   button:disabled{opacity:.5;cursor:not-allowed}
+  .dash-heading{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  .dash-heading button{width:auto;margin:0;padding:5px 9px;border:1px solid var(--line);
+    border-radius:7px;background:transparent;color:#fca5a5;font-size:12px}
   .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:650}
   .pill.approved{background:rgba(34,197,94,.16);color:var(--green)}
   .pill.pending{background:rgba(245,158,11,.16);color:var(--amber)}
@@ -78,25 +93,47 @@
     <h1>Vendor Onboarding — Automated Review</h1>
     <div class="sub">Input a vendor submission → rule engine → reasoned decision. PS-2 case study.</div>
   </div>
-  <div id="aibadge" class="muted">AI reasoning: deterministic fallback</div>
+  <div class="muted">Demo workspace. Use synthetic vendor details and bank letters.</div>
 </header>
 
-<div id="status" class="status" style="display:none"></div>
+<div id="status" class="status" role="status" style="display:none"></div>
 
 <div class="grid">
   <!-- LEFT: input + live run view -->
   <div class="card">
     <h2>1 · Vendor Submission</h2>
 
-    <label>Load example</label>
+    <section class="import-panel" aria-labelledby="import-title">
+      <strong id="import-title">Import vendor onboarding form</strong>
+      <p class="muted">Review values from a searchable PDF. Scanned forms can use local OCR when available.</p>
+      <label for="onboarding_pdf">Onboarding form PDF</label>
+      <input type="file" id="onboarding_pdf" accept=".pdf,application/pdf" />
+      <button type="button" id="readOnboarding" disabled>Read form PDF</button>
+      <p id="importStatus" class="muted import-status" role="status"></p>
+      <div id="importPreview" hidden>
+        <table aria-label="Imported field suggestions">
+          <thead><tr><th>Field</th><th>Suggested value</th><th>Source</th></tr></thead>
+          <tbody id="importRows"></tbody>
+        </table>
+        <button type="button" id="toggleImportedAccount" aria-pressed="false" hidden>Show full account for review</button>
+        <label id="ocrConfirmation" class="ocr-confirmation" hidden>
+          <input type="checkbox" id="confirmOcr" /> I checked the OCR suggestions against the scanned form.
+        </label>
+        <p class="muted">Applying replaces the current draft and clears its bank proof and document checklist.</p>
+        <button type="button" id="applyOnboarding">Apply to new submission</button>
+      </div>
+    </section>
+
+    <label for="example">Load example</label>
     <select id="example"><option value="">— choose a prepared case —</option></select>
 
-    <label>Vendor (trading) name</label>
+    <label for="vendor_name">Vendor (trading) name</label>
     <input id="vendor_name" placeholder="Acme Manufacturing Pvt Ltd" />
     <div class="row">
-      <div><label>Registered legal name</label><input id="legal_name" placeholder="Acme Manufacturing Pvt. Ltd." /></div>
-      <div><label>Country (ISO-2)</label>
+      <div><label for="legal_name">Registered legal name</label><input id="legal_name" placeholder="Acme Manufacturing Pvt. Ltd." /></div>
+      <div><label for="country">Country (ISO-2)</label>
         <select id="country">
+          <option value="">Choose a country</option>
           <option value="IN">IN — India</option>
           <option value="US">US — United States</option>
           <option value="GB">GB — United Kingdom</option>
@@ -106,28 +143,33 @@
       </div>
     </div>
     <div class="row">
-      <div><label>Tax ID</label><input id="tax_id" placeholder="e.g. 29ABCDE1234F1Z5" /></div>
-      <div><label>Contact email</label><input id="contact_email" placeholder="ops@acme.com" /></div>
+      <div><label for="tax_id">Tax ID</label><input id="tax_id" placeholder="e.g. 29ABCDE1234F1Z5" /></div>
+      <div><label for="contact_email">Contact email</label><input id="contact_email" placeholder="ops@acme.com" /></div>
     </div>
     <div class="row">
-      <div><label>Bank account holder name</label><input id="bank_holder_name" placeholder="Acme Manufacturing Pvt Ltd" /></div>
-      <div><label>Bank account number</label><input id="bank_account_number" placeholder="1234567890" /></div>
+      <div><label for="bank_holder_name">Bank account holder name</label><input id="bank_holder_name" placeholder="Acme Manufacturing Pvt Ltd" /></div>
+      <div><label for="bank_account_number">Bank account number</label><input id="bank_account_number" placeholder="1234567890" /></div>
     </div>
+    <label for="bank_routing">Bank routing code (IFSC, if applicable)</label>
+    <input id="bank_routing" autocomplete="off" />
+    <div id="routingHint" class="muted" aria-live="polite"></div>
 
-    <label>Bank-proof document (sample bank letter — text)</label>
+    <label for="bank_proof_text">Bank-proof document (pasted letter text)</label>
     <textarea id="bank_proof_text" placeholder="Account holder: Acme Manufacturing Pvt Ltd ..."></textarea>
 
-    <label>Bank-proof PDF upload (optional - overrides the text above for this run)</label>
+    <label for="bank_pdf">Bank-proof PDF upload (takes precedence over pasted text)</label>
     <input type="file" id="bank_pdf" accept=".pdf,application/pdf" />
-    <div id="evidenceInfo" class="muted" style="margin-top:4px"></div>
+    <div id="evidenceInfo" class="muted" aria-live="polite" style="margin-top:4px"></div>
+    <div class="muted">Use a bank letter or statement for this upload.</div>
 
-    <label>Attached documents</label>
+    <p class="muted">Document checklist. Mark the evidence you have supplied.</p>
     <div class="checks">
-      <label><input type="checkbox" class="doc" value="incorporation_proof" checked /> Incorporation proof</label>
-      <label><input type="checkbox" class="doc" value="bank_proof" checked /> Bank proof</label>
-      <label><input type="checkbox" class="doc" value="tax_registration" checked /> Tax registration</label>
-      <label><input type="checkbox" class="doc" value="address_proof" checked /> Address proof</label>
+      <label><input type="checkbox" class="doc" value="incorporation_proof" /> Incorporation proof</label>
+      <label><input type="checkbox" class="doc" value="bank_proof" /> Bank proof</label>
+      <label><input type="checkbox" class="doc" value="tax_registration" /> Tax registration</label>
+      <label><input type="checkbox" class="doc" value="address_proof" /> Address proof</label>
     </div>
+    <p id="importReviewNeeded" class="muted review-required" role="status" hidden></p>
     <button id="runBtn">▶ Run process</button>
 
     <div style="margin-top:18px">
@@ -144,7 +186,11 @@
 
   <!-- RIGHT: dashboard -->
   <div class="card">
-    <h2>Dashboard · Run History</h2>
+    <div class="dash-heading">
+      <h2>Dashboard · Run History</h2>
+      <button type="button" id="clearHistoryBtn" hidden disabled>Clear run history</button>
+    </div>
+    <div class="muted" id="historyStatus" role="status"></div>
     <div class="muted" id="dashHint">No runs yet.</div>
     <table id="dashTable">
       <thead><tr><th>Run</th><th>Status</th><th>Attempt</th><th>ms</th></tr></thead>
@@ -172,9 +218,156 @@ function setField(id, v){ $(id).value = (v==null?'':v); }
 // never control a later run.
 let evidenceState = { source: 'text', file: null, error: '' };
 let evidenceGen = 0;
+let historyGen = 0;
+let dashboardGen = 0;
+let clearingHistory = false;
+const examples = new Map();
 let correctionCaseId = null;   // set when correcting an existing case
 let correctionPrevId = null;   // the attempt being corrected (verified on save)
 const MAX_PDF_BYTES = 1000000; // must match app/pdf_evidence.py
+const importFields = {
+  vendor_name: 'Vendor name',
+  legal_name: 'Registered legal name',
+  country: 'Country',
+  tax_id: 'GST registration',
+  bank_holder_name: 'Bank account holder',
+  bank_account_number: 'Bank account number',
+  bank_routing: 'IFSC',
+  contact_email: 'Contact email'
+};
+let importGen = 0;
+let importLoading = false;
+let importResult = null;
+let fieldOrigins = {};
+
+function updateImportButtons(){
+  const file = $('onboarding_pdf').files[0];
+  $('readOnboarding').disabled = running || importLoading || !file || file.size > MAX_PDF_BYTES;
+  $('applyOnboarding').disabled = running || !importResult
+    || (importResult.method === 'ocr' && !$('confirmOcr').checked)
+    || !Object.values(importResult.fields).some(field=>field.status !== 'missing');
+}
+
+function pageReference(pages){
+  return pages.length ? (pages.length === 1 ? 'Page ' : 'Pages ')+pages.join(', ') : '';
+}
+
+function importFieldStatus(field, key){
+  if(field.status === 'ambiguous') return 'Conflicting values. Resolve manually.';
+  if(field.status === 'needs_review') return 'Needs review. Enter manually.';
+  if(key === 'bank_holder_name') return 'Holder name absent. Use the name shown on the bank letter.';
+  if(key === 'legal_name') return 'Separate legal name absent. Enter it if different.';
+  return 'Missing. Enter if applicable.';
+}
+
+function renderFieldOrigin(key){
+  const note = $(key+'_source');
+  const field = fieldOrigins[key];
+  if(!field){
+    note.textContent = '';
+    return;
+  }
+  const page = pageReference(field.pages);
+  if(field.status === 'extracted'){
+    note.textContent = (F(key) === field.value ? 'Imported from ' : 'Edited · originally from ')+page.toLowerCase();
+  } else {
+    note.textContent = F(key) ? 'Entered manually' : importFieldStatus(field,key)+(page ? ' '+page+'.' : '');
+  }
+}
+
+function resetOnboardingImport(){
+  importGen++;
+  importLoading = false;
+  importResult = null;
+  fieldOrigins = {};
+  $('onboarding_pdf').value = '';
+  $('importStatus').textContent = '';
+  $('importRows').replaceChildren();
+  $('importPreview').hidden = true;
+  $('confirmOcr').checked = false;
+  Object.keys(importFields).forEach(renderFieldOrigin);
+  updateImportButtons();
+}
+
+function renderImportPreview(result, showAccount = false){
+  $('importRows').replaceChildren();
+  for(const [key, label] of Object.entries(importFields)){
+    const field = result.fields[key];
+    let value = field.value;
+    if(value && key === 'bank_account_number' && !showAccount) value = 'Ends in '+value.slice(-4);
+    const row = document.createElement('tr');
+    for(const text of [label, value || importFieldStatus(field,key), pageReference(field.pages) || '—']){
+      const cell = document.createElement('td');
+      cell.textContent = text;
+      row.appendChild(cell);
+    }
+    $('importRows').appendChild(row);
+  }
+  $('ocrConfirmation').hidden = result.method !== 'ocr';
+  const reveal = $('toggleImportedAccount');
+  reveal.hidden = !result.fields.bank_account_number.value;
+  reveal.setAttribute('aria-pressed', String(showAccount));
+  reveal.textContent = showAccount ? 'Hide full account' : 'Show full account for review';
+  $('importPreview').hidden = false;
+}
+
+async function readOnboardingForm(){
+  const file = $('onboarding_pdf').files[0];
+  if(!file || file.size > MAX_PDF_BYTES || importLoading || running) return;
+  const gen = ++importGen;
+  importLoading = true;
+  importResult = null;
+  $('importPreview').hidden = true;
+  $('confirmOcr').checked = false;
+  $('importStatus').textContent = 'Reading the form…';
+  updateImportButtons();
+  const body = new FormData();
+  body.append('file', file);
+  try{
+    const response = await fetch('/api/import-onboarding', {method:'POST', body});
+    const result = await response.json();
+    if(gen !== importGen) return;
+    if(!response.ok) throw new Error(result.error || 'Could not read the onboarding form.');
+    importResult = result;
+    renderImportPreview(result);
+    const count = Object.values(result.fields).filter(field=>field.status === 'extracted').length;
+    const status = count
+      ? count+' of '+Object.keys(importFields).length+' fields found. Review them below.'
+      : 'No fields could be filled automatically. Enter the details in the form.';
+    $('importStatus').textContent = (result.method === 'ocr' ? 'Scanned form read with OCR. ' : '')+status;
+  }catch(error){
+    if(gen === importGen) $('importStatus').textContent = error.message || 'Could not read the onboarding form.';
+  }finally{
+    if(gen === importGen){
+      importLoading = false;
+      updateImportButtons();
+    }
+  }
+}
+
+function applyOnboardingForm(){
+  if(!importResult || running || $('applyOnboarding').disabled) return;
+  const fields = importResult.fields;
+  startNewSubmission(false);
+  historyGen++;
+  $('result').replaceChildren();
+  $('stagelist').textContent = 'Run the process to see each stage execute in real time.';
+  $('log').textContent = '// no run selected';
+  fieldOrigins = fields;
+  for(const [key, field] of Object.entries(fields)){
+    setField(key, field.value);
+    renderFieldOrigin(key);
+  }
+  $('importStatus').textContent = 'Form details imported. Confirm the values and complete any missing fields. Provide separate bank proof and mark the documents supplied before review.';
+  updateRunButton();
+  $('vendor_name').focus();
+}
+
+function unresolvedImportFields(){
+  return Object.keys(fieldOrigins).filter(key=>
+    ['ambiguous','needs_review'].includes(fieldOrigins[key].status) && !F(key).trim()
+  );
+}
 
 // A selected file is invalid (oversized) -> submission must be blocked until
 // the vendor replaces or explicitly clears it.
@@ -194,7 +387,7 @@ function showConflict(msg, conflict){
   const el = $('status');
   const btn = conflict.latest_run_id
     ? '<button id="openLatestBtn" style="margin-top:8px;padding:6px 12px;font-size:13px">'
-      +'Open latest attempt ('+(conflict.latest_attempt_number||'?')+')</button>'
+      +'Open latest attempt ('+esc(conflict.latest_attempt_number||'?')+')</button>'
     : '';
   el.innerHTML = '<span style="color:var(--red)">'+esc(msg)+'</span>'+btn;
   el.style.display = 'block';
@@ -203,34 +396,43 @@ function showConflict(msg, conflict){
       ()=>showRun(conflict.latest_run_id));
   }
 }
+function correctionNeedsEvidence(){
+  return Boolean(correctionCaseId && !evidenceState.file && !F('bank_proof_text').trim());
+}
 function setEvidenceInfo(){
   const info = $('evidenceInfo');
   if(evidenceState.source === 'pdf'){
     if(evidenceState.error)
       info.innerHTML = '<span style="color:var(--red)">PDF: '+esc(evidenceState.error)+'</span>';
     else
-      info.innerHTML = '<span style="color:var(--blue)">Evidence source: PDF selected (parsed on submit).</span>';
+      info.textContent = 'Evidence source: PDF selected — '+evidenceState.file.name;
+  } else if(correctionNeedsEvidence()){
+    info.textContent = 'Bank proof required for this correction. Choose a PDF or paste the full bank letter to enable Run process.';
   } else {
-    info.innerHTML = '<span style="color:var(--muted)">Evidence source: pasted text.</span>';
+    info.textContent = F('bank_proof_text').trim() ? 'Evidence source: pasted text.' : 'No bank letter supplied.';
   }
 }
 
-function loadExamples(){
-  fetch('/api/examples').then(r=>r.json()).then(j=>{
+async function loadExamples(){
+  try{
+    const response = await fetch('/api/examples');
+    if(!response.ok) throw new Error('Examples unavailable');
+    const j = await response.json();
     const sel = $('example');
     j.examples.forEach(e=>{
+      examples.set(e.name, e.data);
       const o = document.createElement('option');
       o.value = e.name; o.textContent = e.name.replace(/_/g,' ');
       sel.appendChild(o);
     });
-  }).catch(()=>{});
+  }catch{
+    showStatus('Could not load the examples. Refresh the page to try again.');
+  }
 }
-$('example').addEventListener('change', async (e)=>{
-  const name = e.target.value; if(!name) return;
-  const j = await (await fetch('/api/examples')).json();
-  const ex = j.examples.find(x=>x.name===name);
-  if(!ex) return;
-  const d = ex.data;
+$('example').addEventListener('change', (e)=>{
+  const d = examples.get(e.target.value);
+  if(!d) return;
+  resetOnboardingImport();
   setField('vendor_name', d.vendor_name);
   setField('legal_name', d.legal_name);
   $('country').value = d.country || 'IN';
@@ -238,6 +440,8 @@ $('example').addEventListener('change', async (e)=>{
   setField('contact_email', d.contact_email);
   setField('bank_holder_name', d.bank_holder_name);
   setField('bank_account_number', d.bank_account_number);
+  setField('bank_routing', d.bank_routing);
+  $('routingHint').textContent = '';
   setField('bank_proof_text', d.bank_proof_text);
   document.querySelectorAll('.doc').forEach(c=>c.checked = (d.documents||[]).includes(c.value));
   // loading an example clears the file picker and starts fresh evidence
@@ -246,6 +450,7 @@ $('example').addEventListener('change', async (e)=>{
   correctionPrevId = null;
   evidenceGen++;
   evidenceState = { source: 'text', file: null, error: '' };
+  showStatus('');
   setEvidenceInfo();
   updateRunButton();
 });
@@ -257,6 +462,7 @@ $('bank_pdf').addEventListener('change', (e)=>{
   if(!file){
     // explicitly cleared -> evidence returns to the pasted text, submission allowed
     evidenceState = { source: 'text', file: null, error: '' };
+    showStatus('');
     setEvidenceInfo();
     updateRunButton();
     return;
@@ -277,9 +483,22 @@ $('bank_pdf').addEventListener('change', (e)=>{
 });
 
 function updateRunButton(){
-  // block the button while a selected file is invalid; also guards the handler
-  $('runBtn').disabled = running || hasInvalidFile();
+  const unresolved = unresolvedImportFields();
+  const note = $('importReviewNeeded');
+  note.hidden = !unresolved.length;
+  note.textContent = unresolved.length
+    ? 'Resolve the imported fields before running: '+unresolved.map(key=>importFields[key]).join(', ')+'.'
+    : '';
+  $('runBtn').disabled = running || clearingHistory || Boolean(hasInvalidFile())
+    || correctionNeedsEvidence() || unresolved.length > 0;
+  updateClearHistoryButton();
+  updateImportButtons();
 }
+
+$('bank_proof_text').addEventListener('input', ()=>{
+  setEvidenceInfo();
+  updateRunButton();
+});
 
 function formFields(){
   return {
@@ -290,6 +509,7 @@ function formFields(){
     contact_email: F('contact_email').trim() || null,
     bank_holder_name: F('bank_holder_name').trim() || null,
     bank_account_number: F('bank_account_number').trim() || null,
+    bank_routing: F('bank_routing').trim() || null,
     bank_proof_text: F('bank_proof_text').trim() || null,
     documents: docs(),
     case_id: correctionCaseId,
@@ -308,6 +528,7 @@ function buildRunBody(){
     fd.append('contact_email', f.contact_email || '');
     fd.append('bank_holder_name', f.bank_holder_name || '');
     fd.append('bank_account_number', f.bank_account_number || '');
+    fd.append('bank_routing', f.bank_routing || '');
     f.documents.forEach(d => fd.append('documents', d));
     if(f.case_id) fd.append('case_id', f.case_id);
     if(f.expected_previous_run_id) fd.append('expected_previous_run_id', f.expected_previous_run_id);
@@ -320,18 +541,30 @@ function buildRunBody(){
 // --- genuinely live run via SSE (fetch + stream reader) --------------------
 let running = false;
 async function run(){
-  if(running) return;                       // guard against double-click
+  if(running || clearingHistory) return;
+  if(unresolvedImportFields().length){
+    updateRunButton();
+    return;
+  }
   if(hasInvalidFile()){                     // guard: block submission handler
     showStatus('The selected PDF is invalid. Replace it with a smaller bank '
       +'letter or clear the file to submit.');
     updateRunButton();
     return;
   }
+  if(correctionNeedsEvidence()){
+    setEvidenceInfo();
+    updateRunButton();
+    $('bank_pdf').focus();
+    return;
+  }
   const gen = evidenceGen;
+  historyGen++;
   running = true;
-  $('runBtn').disabled = true;
+  updateRunButton();
   $('result').innerHTML = '';
   $('stagelist').innerHTML = '';
+  $('log').textContent = '// waiting for run result';
   showStatus('');
   $('running').style.display = 'flex';
   let result = null;
@@ -344,12 +577,13 @@ async function run(){
     const res = await fetch('/api/run/stream', opts);
     if(!res.ok){
       const err = await res.json().catch(()=>({ error: 'HTTP '+res.status }));
-      if(gen === evidenceGen) showStatus('Could not process the upload: '+esc(err.error||'error'));
+      if(gen === evidenceGen) showStatus(err.error || 'The request failed. Please retry.');
       return;
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
+    let failed = false;
     while(true){
       const {value, done} = await reader.read();
       if(done) break;
@@ -366,18 +600,27 @@ async function run(){
         if(evt === 'stage') addStage(JSON.parse(data));
         else if(evt === 'result') result = JSON.parse(data);
         else if(evt === 'error'){
+          failed = true;
           const e = JSON.parse(data);
+          $('stagelist').textContent = 'This attempt was not saved.';
           if(e.conflict && e.conflict.latest_run_id){
             showConflict(e.error, e.conflict);
           }else{
-            showStatus('Run error: '+esc(e.error || data));
+            showStatus('Run error: '+(e.error || 'Please try again.'));
           }
         }
       }
     }
     if(gen === evidenceGen && result) renderResult(result);
+    else if(gen === evidenceGen && !failed){
+      $('stagelist').textContent = 'The connection ended before the result arrived.';
+      showStatus('Check the dashboard for a saved attempt before retrying.');
+    }
   }catch(e){
-    if(gen === evidenceGen) showStatus('Run failed: '+esc(e));
+    if(gen === evidenceGen){
+      $('stagelist').textContent = 'The result could not be loaded.';
+      showStatus('Check the dashboard for a saved attempt before retrying.');
+    }
   }finally{
     $('running').style.display = 'none';
     running = false;
@@ -390,7 +633,7 @@ const STAGE_LABELS = {
   input_received: "Received vendor submission",
   validate: "Checked bank evidence & compliance",
   decision: "Made decision",
-  ai_reasoning: "Generated reasoning"
+  ai_reasoning: "Prepared decision explanation"
 };
 function addStage(s){
   const d = document.createElement('div');
@@ -405,21 +648,52 @@ function renderStages(r){
   (r.stages || []).forEach(addStage);
 }
 
+function renderBankComparison(r){
+  const bp = r.bank_proof_summary || {};
+  const wrongDocument = bp.name_outcome === 'wrong document';
+  let sourceText = bp.source === 'pdf' ? 'Source PDF · bank proof upload' : 'Source text · pasted bank proof';
+  if(wrongDocument){
+    sourceText = 'This is a vendor onboarding form. Provide a separate bank letter or statement.';
+  } else if(bp.name_outcome === 'missing' || !bp.source){
+    sourceText = 'No bank proof supplied. Provide a bank letter or statement to compare the account details.';
+  } else if(bp.name_outcome === 'unreadable'){
+    sourceText += ' · holder name could not be read';
+  }
+  const statusLabels = {
+    match: 'Match', mismatch: 'Mismatch', missing: 'Missing', unreadable: 'Unreadable',
+    'not comparable': 'Not comparable', 'not compared': 'Not compared',
+    'wrong document': 'Wrong document', 'conflicting numbers': 'Conflicting account numbers'
+  };
+  const rows = [
+    ['Account holder', bp.form_holder ?? r.input?.bank_holder_name,
+      bp.holder_extracted, bp.holder_outcome || bp.name_outcome],
+    ['Account number', bp.form_account_masked, bp.letter_account_masked, bp.account_outcome],
+  ];
+  if(r.input?.country === 'IN' || bp.form_ifsc_masked || bp.letter_ifsc_masked){
+    rows.push(['IFSC', bp.form_ifsc_masked || r.input?.bank_routing,
+      bp.letter_ifsc_masked, bp.ifsc_outcome || 'not compared']);
+  }
+  const body = rows.map(([label, declared, proof, status])=>{
+    const badge = wrongDocument ? 'wrong document' : status || 'not compared';
+    const style = badge === 'conflicting numbers' ? 'mismatch' :
+      badge === 'match' || badge === 'mismatch' ? badge : '';
+    return '<tr><th scope="row">'+esc(label)+'</th><td>'+esc(declared||'—')+
+      '</td><td>'+esc(proof||'—')+'</td><td class="'+style+'">'+esc(statusLabels[badge]||badge)+'</td></tr>';
+  }).join('');
+  return '<div class="needed bank-comparison"><b>Bank evidence comparison</b>'+
+    '<p class="muted'+(wrongDocument?' wrong-document':'')+'">'+esc(sourceText)+'</p>'+
+    '<table aria-label="Bank evidence comparison"><thead><tr><th scope="col">Field</th>'+
+    '<th scope="col">Vendor declaration</th><th scope="col">Bank proof</th>'+
+    '<th scope="col">Result</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+
 function renderResult(r){
   const status = r.status;
-  const rows = r.checks.map(c=>'<div class="check-row">'+
+  const rows = (r.checks||[]).map(c=>'<div class="check-row">'+
     '<span>'+esc(c.name)+'</span>'+
     '<span class="'+(c.passed?'ok':'bad')+'">'+(c.passed?'✓ pass':'✗ fail')+'</span></div>').join('');
 
-  const bp = r.bank_proof_summary || {};
-  const bpHolder = bp.holder_extracted
-    ? '<b>'+esc(bp.holder_extracted)+'</b>'
-    : '<span style="color:var(--red)">none extracted</span>';
-  const bpBlock = '<div class="needed"><b>Bank evidence:</b> source '+esc(bp.source||'text')
-    +' | holder '+bpHolder
-    +' | form account '+esc(bp.form_account_masked||'-')
-    +' | letter account '+esc(bp.letter_account_masked||'-')
-    +' | name: '+esc(bp.name_outcome)+' | account: '+esc(bp.account_outcome)+'</div>';
+  const bpBlock = renderBankComparison(r);
 
   const caseLine = '<div class="muted" style="margin-top:4px">Case '+esc(r.case_id||'-')
     +' · attempt '+esc(r.attempt_number||1)
@@ -463,6 +737,11 @@ function renderResult(r){
       ' &rarr; Attempt '+esc(comp.current_attempt_number)+': account '+
       esc(curBp.account_outcome||'-')+' ('+esc(curBp.form_account_masked||'-')+
       ' / '+esc(curBp.letter_account_masked||'-')+')</div>';
+    const ifscDiff = (prevBp.ifsc_outcome && prevBp.ifsc_outcome !== 'not compared')
+      || (curBp.ifsc_outcome && curBp.ifsc_outcome !== 'not compared')
+      ? '<div class="muted">IFSC comparison: '+esc(prevBp.ifsc_outcome||'not compared')+
+        ' → '+esc(curBp.ifsc_outcome||'not compared')+'</div>'
+      : '';
     const blockerList = (comp.current_blockers||[]).length
       ? '<div style="margin-top:4px;color:var(--red)"><b>Still held because:</b> '+
         comp.current_blockers.map(esc).join('; ') + '</div>'
@@ -477,12 +756,13 @@ function renderResult(r){
       '<div style="margin-top:4px">'+esc(comp.summary)+'</div>'+
       blockerList +
       bpDiff +
+      ifscDiff +
       tsLine +
       (changedRows ? '<div style="margin-top:6px"><b class="muted">Checks that changed</b>'+changedRows+'</div>' : '')+
       '</div>';
   } else if((r.attempt_number||1) > 1){
     compBlock = '<div class="needed" style="margin-top:10px"><b>What changed:</b> '+
-      'This is the first recorded attempt for this case — no earlier attempt to compare against.</div>';
+      'The prior comparison is unavailable for this saved attempt.</div>';
   } else {
     compBlock = '<div class="needed" style="margin-top:10px"><b>What changed:</b> '+
       'First attempt — no earlier attempt to compare against.</div>';
@@ -495,14 +775,13 @@ function renderResult(r){
     : '';
 
   $('result').innerHTML =
-    '<div style="margin-top:6px"><span class="pill '+status+'">'+esc(status.toUpperCase())+'</span></div>'+
+    '<div style="margin-top:6px"><span class="pill '+esc(status)+'">'+esc(status.toUpperCase())+'</span></div>'+
     caseLine +
     bpBlock +
     compBlock +
     '<div style="margin-top:12px">'+rows+'</div>'+
     (msgs ? '<div style="margin-top:10px"><b class="muted">Vendor-facing response</b>'+msgs+'</div>' : '')+
-    '<div class="needed" style="margin-top:10px"><b>Reasoning:</b><br>'+esc(r.reasoning)+
-      (r.ai_used?'<br><span class="muted">(via AI reasoning layer)</span>':'')+'</div>'+
+    '<div class="needed" style="margin-top:10px"><b>Decision explanation</b><br>'+esc(r.reasoning)+'</div>'+
     needed + correctBtn + newSubBtn;
   if(canCorrect){
     $('correctBtn').addEventListener('click', ()=>startCorrection(r));
@@ -513,15 +792,18 @@ function renderResult(r){
   $('log').textContent = JSON.stringify(r, null, 2);
 }
 
-function startNewSubmission(){
+function startNewSubmission(announce = true){
   // Reset EVERYTHING from the previous vendor so the next Run cannot reuse
   // their evidence: fields, account, pasted letter, file picker, checklist,
   // evidence state and the case link.
   correctionCaseId = null;
   correctionPrevId = null;
+  resetOnboardingImport();
+  $('example').value = '';
   ['vendor_name','legal_name','tax_id','contact_email',
-   'bank_holder_name','bank_account_number','bank_proof_text'
+   'bank_holder_name','bank_account_number','bank_routing','bank_proof_text'
   ].forEach(id => setField(id, ''));
+  $('routingHint').textContent = '';
   $('country').value = 'IN';
   document.querySelectorAll('.doc').forEach(c=>c.checked = false);
   $('bank_pdf').value = '';
@@ -529,14 +811,16 @@ function startNewSubmission(){
   evidenceState = { source: 'text', file: null, error: '' };
   setEvidenceInfo();
   updateRunButton();
-  showStatus('Started a fresh submission — all previous fields, the file, and '
-    +'the document checklist were cleared. The next Run creates a new case.');
-  $('vendor_name').focus();
+  showStatus(announce ? 'Started a fresh submission. The next Run creates a new case.' : '');
+  if(announce) $('vendor_name').focus();
 }
 
 function startCorrection(r){
+  if(clearingHistory) return;
   correctionCaseId = r.case_id;
   correctionPrevId = r.id;   // the attempt being corrected; server verifies it
+  resetOnboardingImport();
+  $('example').value = '';
   const inp = r.input || {};
   setField('vendor_name', inp.vendor_name || '');
   setField('legal_name', inp.legal_name || '');
@@ -549,6 +833,10 @@ function startCorrection(r){
   document.querySelectorAll('.doc').forEach(c=>c.checked = (inp.documents||[]).includes(c.value));
   // sensitive fields require re-entry: a masked ending is NOT the real number
   setField('bank_account_number', '');
+  setField('bank_routing', '');
+  $('routingHint').textContent = (r.checks||[]).some(c=>c.name === 'bank_ifsc_match')
+    ? 'Re-enter the full IFSC and supply a bank letter showing it for this correction.'
+    : '';
   setField('bank_proof_text', '');
   $('bank_pdf').value = '';
   evidenceGen++;
@@ -561,41 +849,120 @@ function startCorrection(r){
   $('bank_account_number').focus();
 }
 
+function updateClearHistoryButton(){
+  $('clearHistoryBtn').disabled = running || clearingHistory
+    || !$('dashTable').querySelector('tr[data-run-id]');
+}
+
+async function clearHistory(){
+  if($('clearHistoryBtn').disabled || $('clearHistoryBtn').hidden) return;
+  if(!window.confirm('Permanently delete all saved runs and case history?')) return;
+  clearingHistory = true;
+  updateRunButton();
+  $('historyStatus').textContent = 'Clearing run history…';
+  try{
+    const response = await fetch('/api/runs', {method:'DELETE'});
+    const result = await response.json();
+    if(response.ok || result.deleted){
+      historyGen++;
+      if(correctionCaseId) startNewSubmission(false);
+      $('result').replaceChildren();
+      $('stagelist').textContent = 'Run the process to see each stage execute in real time.';
+      $('log').textContent = '// no run selected';
+    }
+    $('historyStatus').textContent = response.ok
+      ? 'Run history cleared.' : (result.error || 'Could not clear run history.');
+  }catch{
+    $('historyStatus').textContent = 'Could not confirm that history was cleared. Check the dashboard before trying again.';
+  }finally{
+    await loadCases();
+    clearingHistory = false;
+    updateRunButton();
+  }
+}
+
 async function loadCases(){
+  const gen = ++dashboardGen;
   try{
     const res = await fetch('/api/cases');
+    if(!res.ok) throw new Error('Dashboard unavailable');
     const j = await res.json();
+    if(gen !== dashboardGen) return;
+    $('clearHistoryBtn').hidden = !j.can_clear_history;
     const tb = $('dashTable').querySelector('tbody');
     if(!j.cases.length){ $('dashHint').textContent='No cases yet.'; tb.innerHTML=''; return; }
     $('dashHint').textContent = j.count + ' case(s)';
     tb.innerHTML = j.cases.map(c=>{
       const attRows = c.attempts.map(a=>
-        '<tr style="cursor:pointer" onclick="showRun(\''+esc(a.id)+'\')">'+
-        '<td>'+esc(a.id)+'</td><td><span class="pill '+esc(a.status)+'">'+esc(a.status)+
+        '<tr style="cursor:pointer" data-run-id="'+esc(a.id)+'">'+
+        '<td><a href="#run-'+esc(a.id)+'" style="color:inherit">'+esc(a.id)+'</a></td><td><span class="pill '+esc(a.status)+'">'+esc(a.status)+
         '</span></td><td>attempt '+esc(a.attempt_number)+'</td><td>'+esc(a.duration_ms)+'</td></tr>'
       ).join('');
       return '<tr style="cursor:default;background:var(--panel2)"><td colspan="4">'+
         '<b>Case '+esc(c.case_id)+'</b> · '+esc(c.vendor)+' · latest '+esc(c.latest_status)+
         ' ('+esc(c.attempt_count)+' attempt(s))</td></tr>' + attRows;
     }).join('');
-  }catch(e){/* ignore */}
+  }catch{
+    if(gen === dashboardGen) $('dashHint').textContent = 'Could not refresh case history.';
+  }finally{
+    if(gen === dashboardGen) updateClearHistoryButton();
+  }
 }
 
 async function showRun(id){
+  if(running || clearingHistory) return;
+  const gen = ++historyGen;
   try{
     const res = await fetch('/api/runs/'+encodeURIComponent(id));
     if(!res.ok) throw new Error('HTTP '+res.status+' (run not found)');
     const r = await res.json();
+    if(gen !== historyGen) return;
     renderStages(r);
     renderResult(r);
-    $('log').textContent = JSON.stringify(r, null, 2);
     showStatus('');
   }catch(e){
-    showStatus('Could not load run '+esc(id)+': '+esc(e)+'. The last view is still shown.');
+    if(gen === historyGen) showStatus('Could not open this attempt. The last view is still shown.');
   }
 }
 
 $('runBtn').addEventListener('click', run);
+$('clearHistoryBtn').addEventListener('click', clearHistory);
+for(const key of Object.keys(importFields)){
+  const note = document.createElement('div');
+  note.id = key+'_source';
+  note.className = 'muted field-source';
+  $(key).after(note);
+  $(key).setAttribute('aria-describedby', note.id);
+  $(key).addEventListener(key === 'country' ? 'change' : 'input', ()=>{
+    renderFieldOrigin(key);
+    updateRunButton();
+  });
+}
+$('onboarding_pdf').addEventListener('change', ()=>{
+  importGen++;
+  importLoading = false;
+  importResult = null;
+  $('importPreview').hidden = true;
+  $('confirmOcr').checked = false;
+  $('importRows').replaceChildren();
+  $('importStatus').textContent = $('onboarding_pdf').files[0]?.size > MAX_PDF_BYTES
+    ? 'Upload an onboarding PDF that is 1 MB or smaller.' : '';
+  updateImportButtons();
+});
+$('readOnboarding').addEventListener('click', readOnboardingForm);
+$('confirmOcr').addEventListener('change', updateImportButtons);
+$('toggleImportedAccount').addEventListener('click', ()=>{
+  if(importResult) renderImportPreview(importResult, $('toggleImportedAccount').getAttribute('aria-pressed') !== 'true');
+});
+$('applyOnboarding').addEventListener('click', applyOnboardingForm);
+$('dashTable').addEventListener('click', (event)=>{
+  const row = event.target.closest('[data-run-id]');
+  if(row) {
+    event.preventDefault();
+    showRun(row.dataset.runId);
+  }
+});
+setEvidenceInfo();
 loadExamples();
 loadCases();
 

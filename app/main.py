@@ -3,11 +3,13 @@ FastAPI app: exposes the process + a single-page UI.
 
 Endpoints:
 - GET  /                     -> the UI (live run view + dashboard)
+- POST /api/import-onboarding -> suggest editable fields from a vendor onboarding PDF
 - POST /api/run             -> run a submission (JSON text evidence OR multipart file+form)
 - POST /api/run/stream      -> run a submission, streaming each stage live (SSE)
 - GET  /api/cases           -> cases grouped with their attempts (reviewer view)
 - GET  /api/cases/{id}      -> one case with all its attempts
 - GET  /api/runs            -> flat run history (masked summaries)
+- DELETE /api/runs          -> clear local run history
 - GET  /api/runs/{id}       -> one run (masked); 404 for unknown ids
 
 A PDF upload is sent together with the form on Run. The server parses it once,
@@ -15,24 +17,83 @@ keeps bytes/text/full account server-side, and returns only masked evidence.
 """
 from __future__ import annotations
 import json
+import logging
+import os
 import queue
 import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException
+
+try:
+    from python_multipart.exceptions import MultipartParseError
+except ImportError:  # Older python-multipart releases export the original package name.
+    from multipart.exceptions import MultipartParseError
 
 from .models import VendorSubmission
-from .runner import run_process, list_runs, get_run, list_cases, get_case, CorrectionConflict
-from .pdf_evidence import extract_pdf_text, PdfEvidenceError
+from .form_import import import_onboarding_form
+from .runner import (run_process, list_runs, get_run, list_cases, get_case,
+                     clear_run_history, CorrectionConflict)
+from .pdf_evidence import extract_pdf_text, MAX_PDF_BYTES, MAX_PDF_TEXT_CHARS, PdfEvidenceError
 
 BASE = Path(__file__).resolve().parent.parent
 EXAMPLES_DIR = BASE / "data"
 app = FastAPI(title="Vendor Onboarding — Automated Review")
+logger = logging.getLogger(__name__)
+MAX_TEXT_REQUEST_BYTES = 320_000
 
-_FORM_FIELDS = ["vendor_name", "legal_name", "country", "tax_id", "contact_email",
-                "bank_holder_name", "bank_account_number", "bank_proof_text",
-                "bank_evidence_source", "case_id", "expected_previous_run_id"]
+_FORM_FIELDS = frozenset(VendorSubmission.__dataclass_fields__) - {
+    "documents", "bank_evidence_source",
+}
+
+
+class SubmissionError(Exception):
+    """A submission could not be read. No case or attempt was created."""
+
+
+async def _bounded_body(request: Request, limit: int, error: str) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > limit:
+            raise SubmissionError(error)
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _multipart_request(request: Request, body: bytes) -> Request:
+    async def receive_body():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(request.scope, receive_body)
+
+
+def _make_submission(data, pdf_text=None):
+    if not isinstance(data, dict):
+        raise SubmissionError("Provide the submission as an object.")
+    fields = {}
+    for key in _FORM_FIELDS:
+        value = data.get(key)
+        if value is not None and not isinstance(value, str):
+            raise SubmissionError(f"{key.replace('_', ' ').capitalize()} must be text.")
+        limit = MAX_PDF_TEXT_CHARS if key == "bank_proof_text" else 500
+        if value is not None and len(value) > limit:
+            raise SubmissionError(f"{key.replace('_', ' ').capitalize()} is too long.")
+        fields[key] = value.strip() if value is not None else None
+    documents = data.get("documents")
+    if documents is None:
+        documents = []
+    if not isinstance(documents, list) or any(not isinstance(d, str) for d in documents):
+        raise SubmissionError("Documents must be a list of document names.")
+    fields["documents"] = documents
+    fields["vendor_name"] = fields["vendor_name"] or ""
+    if pdf_text is not None:
+        fields["bank_proof_text"] = pdf_text
+        fields["bank_evidence_source"] = "pdf"
+    return VendorSubmission(**fields)
 
 
 async def _submission_from_request(request: Request) -> VendorSubmission:
@@ -42,41 +103,35 @@ async def _submission_from_request(request: Request) -> VendorSubmission:
     it is parsed ONCE here and becomes the bank evidence; the extracted text
     and bytes never leave the server.
     """
-    ctype = request.headers.get("content-type", "")
-    if ctype.startswith("multipart/form-data"):
-        form = await request.form()
-        data: dict = {}
-        for k in _FORM_FIELDS:
-            if k in form:
-                data[k] = form.get(k)
-        if "documents" in form:
-            dv = form.getlist("documents")
-            if len(dv) == 1 and "," in dv[0]:
-                data["documents"] = [x.strip() for x in dv[0].split(",") if x.strip()]
-            else:
-                data["documents"] = dv
-        else:
-            data["documents"] = []
+    multipart = request.headers.get("content-type", "").lower().startswith("multipart/form-data")
+    limit = MAX_TEXT_REQUEST_BYTES + (MAX_PDF_BYTES if multipart else 0)
+    body = await _bounded_body(request, limit, "The submission is too large. Upload a smaller bank letter.")
 
-        files = form.getlist("file")
-        file = files[0] if files else None
-        if file is not None and getattr(file, "filename", ""):
-            # Bounded read: read at most MAX+1 bytes so an oversized file is
-            # rejected without buffering the whole upload into memory.
-            from .pdf_evidence import MAX_PDF_BYTES
-            content = await file.read(MAX_PDF_BYTES + 1)
-            if len(content) > MAX_PDF_BYTES:
-                raise PdfEvidenceError(
-                    f"The uploaded PDF is too large (max "
-                    f"{MAX_PDF_BYTES // 1024} KB). Please upload a smaller "
-                    "bank letter.")
-            ev = extract_pdf_text(content)   # raises PdfEvidenceError
-            data["bank_proof_text"] = ev["text"]
-            data["bank_evidence_source"] = "pdf"
-        return VendorSubmission.from_dict(data)
+    if multipart:
+        bounded_request = _multipart_request(request, body)
+        try:
+            async with bounded_request.form(max_files=1, max_fields=32) as form:
+                data = {key: form.get(key) for key in _FORM_FIELDS}
+                documents = form.getlist("documents")
+                if len(documents) == 1 and isinstance(documents[0], str):
+                    documents = [item.strip() for item in documents[0].split(",") if item.strip()]
+                data["documents"] = documents
+                if "file" not in form:
+                    return _make_submission(data)
+                upload = form["file"]
+                if not isinstance(upload, UploadFile) or not upload.filename:
+                    raise SubmissionError("Choose one bank letter PDF and try again.")
+                content = await upload.read(MAX_PDF_BYTES + 1)
+            evidence = await run_in_threadpool(extract_pdf_text, content)
+            return _make_submission(data, pdf_text=evidence["text"])
+        except (HTTPException, MultipartParseError) as error:
+            raise SubmissionError("The upload could not be read. Submit one bank letter PDF.") from error
 
-    body = await request.json()
-    return VendorSubmission.from_dict(body["data"])
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError) as error:
+        raise SubmissionError("The submission must be valid JSON.") from error
+    return _make_submission(payload.get("data") if isinstance(payload, dict) else None)
 
 
 @app.get("/")
@@ -90,18 +145,41 @@ def api_examples():
     examples = []
     for p in sorted(EXAMPLES_DIR.glob("*.json")):
         if p.name.startswith("happy") or p.name.startswith("edge"):
-            examples.append({"name": p.stem, "data": json.loads(p.read_text())})
+            examples.append({"name": p.stem, "data": json.loads(p.read_text(encoding="utf-8"))})
     return {"examples": examples}
+
+
+@app.post("/api/import-onboarding")
+async def api_import_onboarding(request: Request):
+    headers = {"Cache-Control": "no-store"}
+    try:
+        if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
+            raise SubmissionError("Choose one vendor onboarding form PDF.")
+        body = await _bounded_body(
+            request, MAX_PDF_BYTES + 16_384, "Upload an onboarding PDF that is 1 MB or smaller.",
+        )
+        async with _multipart_request(request, body).form(max_files=1, max_fields=0) as form:
+            upload = form.get("file")
+            if not isinstance(upload, UploadFile) or not upload.filename:
+                raise SubmissionError("Choose one vendor onboarding form PDF.")
+            content = await upload.read(MAX_PDF_BYTES + 1)
+        result = await run_in_threadpool(import_onboarding_form, content)
+    except (HTTPException, MultipartParseError):
+        return JSONResponse({"error": "The form upload could not be read. Choose one PDF."},
+                            status_code=400, headers=headers)
+    except (PdfEvidenceError, SubmissionError) as error:
+        return JSONResponse({"error": str(error)}, status_code=400, headers=headers)
+    return JSONResponse(result, headers=headers)
 
 
 @app.post("/api/run")
 async def api_run(request: Request):
     try:
         sub = await _submission_from_request(request)
-    except PdfEvidenceError as e:
-        return JSONResponse({"error": e.message}, status_code=400)
+    except (PdfEvidenceError, SubmissionError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     try:
-        return run_process(sub)
+        return await run_in_threadpool(run_process, sub)
     except CorrectionConflict as e:
         return JSONResponse({
             "error": e.message,
@@ -122,8 +200,8 @@ async def api_run_stream(request: Request):
     """
     try:
         sub = await _submission_from_request(request)
-    except PdfEvidenceError as e:
-        err_msg = e.message
+    except (PdfEvidenceError, SubmissionError) as e:
+        err_msg = str(e)
         async def err_stream():
             yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
         return StreamingResponse(err_stream(), media_type="text/event-stream",
@@ -143,8 +221,9 @@ async def api_run_stream(request: Request):
                    "conflict": {"case_id": e.case_id,
                                 "latest_run_id": e.latest_run_id,
                                 "latest_attempt_number": e.latest_attempt_number}})
-        except Exception as e:  # surface errors to the client
-            q.put({"type": "error", "data": str(e)})
+        except Exception as e:
+            logger.error("Run failed (%s)", type(e).__name__)
+            q.put({"type": "error", "data": "The run failed. Please try again."})
         finally:
             q.put({"type": "done"})
 
@@ -171,10 +250,20 @@ async def api_run_stream(request: Request):
                                       "X-Accel-Buffering": "no"})
 
 
+def _local_history_access(request: Request) -> bool:
+    """Allow deletion only in the local demo, including the URL seen by the browser."""
+    return (
+        os.environ.get("VERCEL") != "1"
+        and request.client is not None
+        and request.client.host in {"127.0.0.1", "::1"}
+        and request.url.hostname in {"127.0.0.1", "::1", "localhost"}
+    )
+
+
 @app.get("/api/cases")
-def api_cases():
+def api_cases(request: Request):
     cases = list_cases()
-    return {"count": len(cases), "cases": cases}
+    return {"count": len(cases), "cases": cases, "can_clear_history": _local_history_access(request)}
 
 
 @app.get("/api/cases/{case_id}")
@@ -195,6 +284,21 @@ def api_runs():
         "reason": (r.get("reasoning", "") or "")[:120],
     } for r in runs]
     return {"count": len(summaries), "runs": summaries}
+
+
+@app.delete("/api/runs")
+def api_clear_runs(request: Request):
+    origin = f"{request.url.scheme}://{request.url.netloc}"
+    if not _local_history_access(request) or request.headers.get("origin") != origin:
+        return JSONResponse({"error": "Run history can only be cleared from the local dashboard."},
+                            status_code=403)
+    deleted, retained = clear_run_history()
+    if retained:
+        return JSONResponse({
+            "deleted": deleted,
+            "error": f"{retained} saved run(s) could not be removed. Check file access and try again.",
+        }, status_code=500)
+    return {"deleted": deleted}
 
 
 @app.get("/api/runs/{run_id}")

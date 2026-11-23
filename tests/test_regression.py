@@ -259,6 +259,204 @@ def test_extract_account_number():
     assert extract_bank_account("Account no: AB123456789") == "AB123456789"
 
 
+def test_bank_letter_conflicts_and_masked_values_cannot_be_approved():
+    original = BASE["bank_proof_text"]
+    for extra in ("Account no.: 9999999999", "Account holder name: Different Vendor"):
+        assert status(make(BASE, bank_proof_text=f"{original}\n{extra}")) == "pending"
+    for masked in ("******7890", "XXXX 7890"):
+        suffix = make(BASE, bank_account_number="7890",
+                      bank_proof_text=original.replace("1234567890", masked))
+        assert status(suffix) == "pending"
+    assert status(make(BASE, bank_proof_text=original + "\nAccount no.: 1234-5678-90")) == "approved"
+
+
+def test_holder_extraction_stays_on_its_line():
+    letter = "Account holder:\nAccount number: 1234567890"
+    assert extract_bank_holder(letter) is None
+    assert extract_bank_holder("Account holder: Acme 1234567890") is None
+    assert status(make(BASE, bank_proof_text=letter)) == "pending"
+
+
+def test_optional_narrative_receives_only_verified_findings():
+    from unittest.mock import patch
+
+    prompts = []
+
+    def summarize(prompt):
+        prompts.append(prompt)
+        return "The submitted account number matches the bank letter. The document checklist is complete."
+
+    with patch("app.ai_layer.LLM_CALL", summarize):
+        result = _runner.run_process(make(BASE))
+    assert result["status"] == "approved" and result["ai_used"]
+    assert result["stages"][-1]["detail"] == "AI summary generated from validation checks."
+    assert len(prompts) == 1
+    facts = json.loads(prompts[0].split("\n", 1)[1])
+    assert facts["decision"] == "approved"
+    assert facts["blocking_findings"] == []
+    assert facts["required_opening_sentence"] == "The submitted account number matches the bank letter."
+    assert "Acme Manufacturing" not in prompts[0] and "1234567890" not in prompts[0]
+
+
+def test_decision_and_vendor_actions_survive_model_failure():
+    from unittest.mock import patch
+
+    submission = make(BASE, bank_account_number="9999999999")
+    with patch("app.ai_layer.LLM_CALL", None), patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
+        rule_based = _runner.run_process(submission)
+    with patch("app.ai_layer.LLM_CALL", side_effect=TimeoutError):
+        fallback = _runner.run_process(submission)
+    for result in (rule_based, fallback):
+        assert result["status"] == "pending" and not result["ai_used"]
+        assert result["reasoning"] == rule_based["reasoning"]
+        assert result["vendor_messages"] == rule_based["vendor_messages"]
+        assert "account number differs from the bank letter" in result["reasoning"]
+    assert rule_based["stages"][-1]["detail"] == "Explanation generated from validation checks."
+    assert fallback["stages"][-1]["detail"] == "AI summary unavailable. Used the built-in explanation."
+
+
+def test_gemini_generates_a_summary_from_safe_case_findings():
+    from io import BytesIO
+    from unittest.mock import patch
+
+    contact_email = "accounts@example.test"
+    summary = "The submitted account number differs from the bank letter."
+    response = {"candidates": [{"finishReason": "STOP", "content": {"parts": [
+        {"text": "Internal thought", "thought": True}, {"text": summary},
+    ]}}]}
+    with (patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}),
+          patch("app.ai_layer.urlopen", return_value=BytesIO(json.dumps(response).encode())) as send):
+        run = _runner.run_process(make(BASE, contact_email=contact_email, bank_account_number="9999999999"))
+    send.assert_called_once()
+    request = send.call_args.args[0]
+    assert request.full_url.startswith("https://generativelanguage.googleapis.com/")
+    assert request.full_url.endswith("/gemini-3.5-flash-lite:generateContent")
+    assert request.get_header("X-goog-api-key") == "test-key"
+    prompt = json.loads(request.data)["contents"][0]["parts"][0]["text"]
+    facts = json.loads(prompt.split("\n", 1)[1])
+    assert facts["decision"] == "pending"
+    assert facts["blocking_findings"] == [summary]
+    assert all(secret not in prompt for secret in (
+        BASE["vendor_name"], BASE["tax_id"], contact_email,
+        BASE["bank_proof_text"], "1234567890", "9999999999", "7890", "9999", "test-key",
+    ))
+    assert run["status"] == "pending" and run["ai_used"]
+    assert run["reasoning"] == summary
+    assert run["stages"][-1]["detail"] == "Gemini summary generated from validation checks."
+    assert [message["check"] for message in run["vendor_messages"]] == ["bank_account_match"]
+
+
+def test_gemini_incomplete_response_uses_the_builtin_explanation():
+    from io import BytesIO
+    from unittest.mock import patch
+
+    response = {"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [
+        {"text": "Unfinished summary"},
+    ]}}]}
+    with (patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}),
+          patch("app.ai_layer.urlopen", return_value=BytesIO(json.dumps(response).encode()))):
+        run = _runner.run_process(make(BASE))
+    assert run["status"] == "approved" and not run["ai_used"]
+    assert "The submitted account number matches the bank letter." in run["reasoning"]
+    assert run["stages"][-1]["detail"] == "Gemini summary unavailable. Used the built-in explanation."
+
+
+def test_generic_model_reply_falls_back_to_specific_findings():
+    from unittest.mock import patch
+
+    proof = BASE["bank_proof_text"] + "\nAccount number: 9999999999"
+    docs = [kind for kind in BASE["documents"] if kind != "address_proof"]
+    with patch("app.ai_layer.LLM_CALL", return_value="Some checks failed. Please review the submission.") as model:
+        run = _runner.run_process(make(BASE, bank_proof_text=proof, documents=docs))
+    facts = json.loads(model.call_args.args[0].split("\n", 1)[1])
+    assert facts["blocking_findings"] == [
+        "The bank proof contains conflicting account numbers.",
+        "The checklist is missing address proof.",
+    ]
+    assert not run["ai_used"]
+    assert all(finding in run["reasoning"] for finding in facts["blocking_findings"])
+
+
+def test_explanation_distinguishes_verified_account_from_changed_ifsc():
+    from unittest.mock import patch
+
+    proof = BASE["bank_proof_text"] + "\nIFSC: DEMO0009999"
+    with (patch("app.ai_layer.LLM_CALL", None),
+          patch.dict("os.environ", {"GEMINI_API_KEY": ""})):
+        run = _runner.run_process(make(BASE, bank_proof_text=proof, bank_routing="DEMO0001234"))
+    assert run["reasoning"].startswith("The submitted IFSC differs from the bank letter.")
+    assert "The submitted account number matches the bank letter." in run["reasoning"]
+    assert "DEMO000" not in run["reasoning"]
+
+
+def test_legacy_explanation_stage_uses_current_display_wording():
+    old_detail = "Deterministic reasoning (AI layer not wired)"
+    saved = {"stages": [{"stage": "ai_reasoning", "detail": old_detail}]}
+    view = _runner._run_view(saved)
+    assert view["stages"][0]["detail"] == "Explanation generated from validation checks."
+    assert saved["stages"][0]["detail"] == old_detail
+
+
+def test_history_clear_requires_local_same_origin_and_survives_reload():
+    from unittest.mock import patch
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    async def local_app(scope, receive, send):
+        if scope["type"] == "http":
+            scope = {**scope, "client": ("127.0.0.1", 52104)}
+        await app(scope, receive, send)
+
+    local_url = "http://127.0.0.1:8001"
+    with (tempfile.TemporaryDirectory() as directory,
+          patch.object(_runner, "OUT_DIR", pathlib.Path(directory)),
+          patch.object(_runner, "_runs", []),
+          patch.dict("os.environ", {"VERCEL": "", "GEMINI_API_KEY": ""}),
+          TestClient(local_app, base_url=local_url) as client):
+        unrelated = pathlib.Path(directory) / "notes.json"
+        unrelated.write_text("{}")
+        run = _runner.run_process(make(BASE))
+        assert client.get("/api/cases").json()["can_clear_history"]
+        for origin in ({}, {"Origin": "https://example.invalid"}):
+            assert client.delete("/api/runs", headers=origin).status_code == 403
+        with patch.dict("os.environ", {"VERCEL": "1"}):
+            assert not client.get("/api/cases").json()["can_clear_history"]
+            assert client.delete("/api/runs", headers={"Origin": local_url}).status_code == 403
+        assert client.get("/api/runs").json()["count"] == 1
+
+        cleared = client.delete("/api/runs", headers={"Origin": local_url})
+        assert cleared.status_code == 200 and cleared.json() == {"deleted": 1}
+        _runner._load_saved_runs()
+        assert client.get("/api/runs").json()["count"] == 0
+        assert client.get("/api/cases").json()["count"] == 0
+        assert client.get(f"/api/runs/{run['id']}").status_code == 404
+        assert unrelated.is_file()
+        assert client.delete("/api/runs", headers={"Origin": local_url}).json() == {"deleted": 0}
+
+
+def test_history_clear_keeps_earlier_attempts_if_a_file_cannot_be_removed():
+    from unittest.mock import patch
+
+    with (tempfile.TemporaryDirectory() as directory,
+          patch.object(_runner, "OUT_DIR", pathlib.Path(directory)),
+          patch.object(_runner, "_runs", []),
+          patch.dict("os.environ", {"GEMINI_API_KEY": ""})):
+        previous = _runner.run_process(make(BASE, bank_account_number="9999999999"))
+        _runner.run_process(make(BASE, case_id=previous["case_id"], expected_previous_run_id=previous["id"]))
+        unlink = pathlib.Path.unlink
+
+        def fail_older_attempt(path, **kwargs):
+            if path.stem == previous["id"]:
+                raise PermissionError
+            return unlink(path, **kwargs)
+
+        with patch.object(pathlib.Path, "unlink", fail_older_attempt):
+            assert _runner.clear_run_history() == (1, 1)
+        _runner._load_saved_runs()
+        assert [run["id"] for run in _runner.list_runs()] == [previous["id"]]
+        assert _runner.clear_run_history() == (1, 0)
+
+
 def test_evidence_is_shared_not_double_parsed():
     # the holder used by the rules equals the holder in the summary
     sub = make(BASE)
@@ -329,6 +527,385 @@ def test_api_404_for_unknown_run():
     c = TestClient(app)
     r = c.get("/api/runs/does-not-exist")
     assert r.status_code == 404
+
+
+def test_bad_submission_bodies_create_no_runs():
+    from fastapi.testclient import TestClient
+    from app.main import app, MAX_TEXT_REQUEST_BYTES
+
+    before = len(_runner.list_runs())
+    headers = {"Content-Type": "application/json"}
+    with TestClient(app) as client:
+        for body in (
+            b"{", b"[]", b"{}", b'{"data":{"bank_account_number":123}}',
+            b'{"data":{"documents":["bank_proof",{}]}}',
+            b'{"data":{"country":{}}}',
+            b" " * (MAX_TEXT_REQUEST_BYTES + 1),
+        ):
+            assert client.post("/api/run", content=body, headers=headers).status_code == 400
+            stream = client.post("/api/run/stream", content=body, headers=headers).text
+            assert "event: error" in stream and "event: result" not in stream
+
+        response = client.post("/api/run", content=b"bad boundary", headers={
+            "Content-Type": "multipart/form-data; boundary=letter"
+        })
+        assert response.status_code == 400
+    assert len(_runner.list_runs()) == before
+
+
+def test_image_only_fixture_contains_an_image_and_no_selectable_text():
+    from pypdf import PdfReader
+    from app.pdf_evidence import extract_pdf_text
+
+    fixture = PDF_DIR / "pdf_image_only.pdf"
+    assert len(PdfReader(fixture).pages[0].images) == 1
+    assert extract_pdf_text(fixture.read_bytes())["readable"] is False
+
+
+def test_pdf_page_limit_rejects_a_small_but_overlong_upload():
+    from io import BytesIO
+    from fastapi.testclient import TestClient
+    from pypdf import PdfWriter
+    from app.main import app
+    from app.pdf_evidence import MAX_PDF_BYTES, MAX_PDF_PAGES
+
+    writer = PdfWriter()
+    for _ in range(MAX_PDF_PAGES + 1):
+        writer.add_blank_page(width=595, height=842)
+    pdf = BytesIO()
+    writer.write(pdf)
+    assert len(pdf.getvalue()) < MAX_PDF_BYTES
+    before = len(_runner.list_runs())
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/run", data=BASE,
+            files={"file": ("many-pages.pdf", pdf.getvalue(), "application/pdf")},
+        )
+    assert response.status_code == 400
+    assert f"at most {MAX_PDF_PAGES} pages" in response.json()["error"]
+    assert len(_runner.list_runs()) == before
+
+
+def test_import_onboarding_form_suggests_values_with_source_pages_and_saves_no_run():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    before = sorted(_runner.OUT_DIR.glob("*.json"))
+    with TestClient(app) as client:
+        count = client.get("/api/runs").json()["count"]
+        response = client.post("/api/import-onboarding", files={
+            "file": ("intake.pdf", pdf_bytes("vendor_onboarding_sample.pdf"), "application/pdf"),
+        })
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        assert client.get("/api/runs").json()["count"] == count
+    assert sorted(_runner.OUT_DIR.glob("*.json")) == before
+    data = response.json()
+    assert data["page_count"] == 2
+    assert data["method"] == "text"
+    expected = {
+        "vendor_name": "Juniper Office Systems Pvt Ltd", "country": "IN",
+        "legal_name": "Juniper Office Systems Pvt Ltd",
+        "bank_holder_name": "Juniper Office Systems Pvt Ltd",
+        "tax_id": "29ABCDE1234F1Z5", "bank_account_number": "001234567890",
+        "bank_routing": "DEMO0001234", "contact_email": "procurement@juniper.example",
+    }
+    assert data["fields"] == {
+        name: {"status": "extracted", "value": value, "pages": [1]}
+        for name, value in expected.items()
+    }
+    assert "Sample Vendor Representative" not in response.text
+
+
+def test_import_alternate_supplier_layout_preserves_values_and_source_pages():
+    from app.form_import import import_onboarding_form
+
+    result = import_onboarding_form(pdf_bytes("supplier_registration_v2.pdf"))
+    expected = {
+        "vendor_name": ("Harborline Supplies", 1),
+        "legal_name": ("Harborline Lab Supplies Pvt Ltd", 1),
+        "country": ("IN", 1),
+        "tax_id": ("27ABCDE1234F1Z7", 1),
+        "contact_email": ("accounts@harborline.example", 1),
+        "bank_holder_name": ("Harborline Lab Supplies Pvt Ltd", 2),
+        "bank_account_number": ("007451236809", 2),
+        "bank_routing": ("DEMO0004321", 2),
+    }
+    assert result["method"] == "text" and result["page_count"] == 2
+    assert result["fields"] == {
+        name: {"status": "extracted", "value": value, "pages": [page]}
+        for name, (value, page) in expected.items()
+    }
+
+
+def test_import_image_only_supplier_form_uses_ocr():
+    from unittest.mock import patch
+    from app.form_import import import_onboarding_form
+    from app.pdf_evidence import extract_pdf_pages
+
+    scan = pdf_bytes("supplier_registration_scan.pdf")
+    original = pdf_bytes("supplier_registration_v2.pdf")
+    assert extract_pdf_pages(scan) == ["", ""]
+    with patch("app.form_import.read_scanned_form", return_value=extract_pdf_pages(original, layout=True)) as ocr:
+        result = import_onboarding_form(scan)
+    ocr.assert_called_once_with(scan, 2)
+    assert result["method"] == "ocr"
+    assert result["fields"] == import_onboarding_form(original)["fields"]
+
+
+def test_import_stacked_fields_do_not_capture_a_following_labeled_row():
+    from unittest.mock import patch
+    from app.form_import import import_onboarding_form
+
+    page = (
+        "Supplier Registration Form\nSupplier Trading Name: Demo Vendor\n"
+        "Registered Entity Name:\n      Tax Residence Country: India\n"
+        "Beneficiary Name:\n      Account Type: Current account"
+    )
+    with patch("app.form_import.extract_pdf_pages", return_value=[page]):
+        fields = import_onboarding_form(b"test")["fields"]
+    assert fields["country"] == {"status": "extracted", "value": "IN", "pages": [1]}
+    for name in ("legal_name", "bank_holder_name"):
+        assert fields[name] == {"status": "missing", "value": None, "pages": [1]}
+
+
+def test_import_onboarding_form_leaves_ambiguous_and_missing_values_blank():
+    from app.form_import import import_onboarding_form
+
+    fields = import_onboarding_form(pdf_bytes("vendor_onboarding_needs_review.pdf"))["fields"]
+    assert fields["bank_account_number"] == {
+        "status": "ambiguous", "value": None, "pages": [1, 2],
+    }
+    assert fields["contact_email"]["status"] == "missing"
+    assert fields["contact_email"]["value"] is None
+    assert fields["legal_name"]["value"] is None
+    assert fields["bank_holder_name"]["value"] is None
+    assert fields["vendor_name"]["status"] == "extracted"
+
+
+def test_import_onboarding_form_does_not_prefill_unrecognized_values():
+    from unittest.mock import patch
+    from app.form_import import import_onboarding_form
+
+    with patch("app.form_import.extract_pdf_pages", return_value=[
+        "Vendor onboarding form\nVendor Name: Demo Vendor\nCountry: Unmapped Country\n"
+        "GSTIN: missing\nBank Account Number: ****6789\nIFSC Code: TEMP\nContact Email: bad-address"
+    ]):
+        fields = import_onboarding_form(b"test")["fields"]
+    for name in ("country", "tax_id", "bank_account_number", "bank_routing", "contact_email"):
+        assert fields[name] == {"status": "needs_review", "value": None, "pages": [1]}
+
+
+def test_import_onboarding_form_handles_missing_ocr_wrong_documents_and_bad_uploads():
+    from unittest.mock import patch
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with (patch.dict("os.environ", {"ONBOARDING_PDFTOPPM": "", "ONBOARDING_TESSERACT": ""}),
+          patch("app.pdf_evidence.shutil.which", return_value=None),
+          TestClient(app) as client):
+        response = client.post("/api/import-onboarding", json={})
+        assert response.status_code == 400 and "one vendor onboarding form" in response.text
+        for filename, message in (
+            ("pdf_image_only.pdf", "no selectable text"),
+            ("pdf_two_page_match.pdf", "supported onboarding form"),
+            ("invalid.pdf", "not a valid PDF"),
+        ):
+            response = client.post("/api/import-onboarding", files={
+                "file": (filename, pdf_bytes(filename), "application/pdf"),
+            })
+            assert response.status_code == 400 and message in response.text
+
+
+def test_onboarding_form_cannot_be_reused_as_bank_proof():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    uploads = {"file": ("renamed_bank_proof.pdf", pdf_bytes("vendor_onboarding_sample.pdf"), "application/pdf")}
+    with TestClient(app) as client:
+        imported = client.post("/api/import-onboarding", files=uploads).json()
+        form = {name: field["value"] for name, field in imported["fields"].items()}
+        form["documents"] = BASE["documents"]
+        response = client.post("/api/run", data=form, files=uploads)
+    assert response.status_code == 200
+    run = response.json()
+    summary = run["bank_proof_summary"]
+    assert run["status"] == "pending"
+    assert summary["proof_kind"] == "vendor_declaration"
+    assert summary["name_outcome"] == "wrong document"
+    assert [m["check"] for m in run["vendor_messages"]] == ["bank_proof_document"]
+    assert "separate bank letter" in run["vendor_messages"][0]["message"]
+
+
+def test_ifsc_comparison_uses_both_sources_without_exposing_full_banking_values():
+    letter = BASE["bank_proof_text"]
+    for routing, proof, expected_status, expected_ifsc in (
+        ("demo0 001234", "DEMO0001234", "approved", "match"),
+        ("DEMO0001234", "DEMO0009999", "pending", "mismatch"),
+        ("DEMO0001234", "DEMO0001234\nBranch IFSC: DEMO0009999", "pending", "not comparable"),
+        ("DEMO0001234", None, "approved", "not compared"),
+        ("DEMO0001234", "", "approved", "not compared"),
+        ("DEMO0001234", "Not Applicable", "approved", "not compared"),
+        (None, "DEMO0001234", "approved", "not compared"),
+    ):
+        proof_text = letter + ("\nIFSC: " + proof if proof is not None else "")
+        run = _runner.run_process(make(BASE, bank_routing=routing, bank_proof_text=proof_text))
+        summary = run["bank_proof_summary"]
+        assert (run["status"], summary["ifsc_outcome"]) == (expected_status, expected_ifsc)
+        assert summary["holder_outcome"] == "match"
+        assert summary["account_outcome"] == "match"
+        assert not any(value in json.dumps(run) for value in ("1234567890", "DEMO0001234", "DEMO0009999"))
+
+
+def test_ifsc_correction_cannot_skip_a_previously_required_comparison():
+    letter = BASE["bank_proof_text"] + "\nIFSC: DEMO0009999"
+    first = _runner.run_process(make(BASE, bank_routing="DEMO0001234", bank_proof_text=letter))
+    assert first["status"] == "pending"
+    second = _runner.run_process(make(
+        BASE, bank_routing=None, case_id=first["case_id"], expected_previous_run_id=first["id"],
+    ))
+    assert second["status"] == "pending"
+    assert second["bank_proof_summary"]["ifsc_outcome"] == "not comparable"
+    third = _runner.run_process(make(
+        BASE, bank_routing="DEMO0009999", bank_proof_text=letter,
+        case_id=first["case_id"], expected_previous_run_id=second["id"],
+    ))
+    assert third["status"] == "approved"
+    assert third["bank_proof_summary"]["ifsc_outcome"] == "match"
+    assert "the submitted IFSC matched the bank letter" in third["comparison"]["summary"]
+
+
+# --- Interview scenarios: the same PDFs and upload flow as the live demo ---
+def _juniper_submission(client):
+    form_name = "vendor_onboarding_sample.pdf"
+    preview = client.post("/api/import-onboarding", files={
+        "file": (form_name, pdf_bytes(form_name), "application/pdf"),
+    })
+    assert preview.status_code == 200
+    fields = {name: field["value"] for name, field in preview.json()["fields"].items()}
+    return {**fields, "documents": BASE["documents"]}
+
+
+def _run_interview_pdf(client, fields, path, previous=None):
+    if previous is not None:
+        fields = {**fields, "case_id": previous["case_id"], "expected_previous_run_id": previous["id"]}
+    response = client.post("/api/run", data=fields, files={
+        "file": (path.name, path.read_bytes(), "application/pdf"),
+    })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_interview_bank_packet_holds_even_when_one_account_matches():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    demo_dir = DATA.parent / "output" / "pdf"
+    packet = demo_dir / "juniper_conflicting_bank_confirmations.pdf"
+    with TestClient(app) as client:
+        fields = _juniper_submission(client)
+        held = _run_interview_pdf(client, fields, packet)
+        reviewed = _run_interview_pdf(client, fields, packet, previous=held)
+        fixed = _run_interview_pdf(
+            client, fields, demo_dir / "juniper_bank_account_confirmation.pdf", previous=reviewed,
+        )
+        history = client.get(f"/api/cases/{held['case_id']}").json()
+    assert held["status"] == "pending"
+    evidence = held["bank_proof_summary"]
+    assert evidence["account_outcome"] == "conflicting numbers"
+    assert evidence["letter_account_masked"] == ""
+    assert evidence["name_outcome"] == "match"
+    assert [message["check"] for message in held["vendor_messages"]] == ["bank_account_match"]
+    assert "conflicting account numbers" in held["vendor_messages"][0]["message"]
+    assert "current bank letter" in held["vendor_messages"][0]["message"]
+    assert reviewed["comparison"]["current_blockers"] == ["the bank proof contained conflicting account numbers"]
+    assert fixed["status"] == "approved"
+    assert "the submitted account matched the new evidence" in fixed["comparison"]["summary"]
+    assert [attempt["status"] for attempt in history["attempts"]] == ["pending", "pending", "approved"]
+    for full_value in ("001234567890", "001234569999"):
+        assert full_value not in json.dumps((held, reviewed, fixed, history))
+
+
+def test_interview_vendor_declaration_requires_independent_bank_proof():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client:
+        fields = _juniper_submission(client)
+        pasted_confirmation = (
+            "Account holder: Juniper Office Systems Pvt Ltd\n"
+            "Account number: 001234567890\nIFSC: DEMO0001234"
+        )
+        response = client.post(
+            "/api/run", data={**fields, "bank_proof_text": pasted_confirmation},
+            files={"file": ("Juniper_Bank_Confirmation.pdf", pdf_bytes("vendor_onboarding_sample.pdf"),
+                            "application/pdf")},
+        )
+        assert response.status_code == 200
+        held = response.json()
+        fixed = _run_interview_pdf(
+            client, fields, DATA.parent / "output" / "pdf" / "juniper_bank_account_confirmation.pdf", previous=held,
+        )
+    assert held["status"] == "pending"
+    assert held["bank_proof_summary"]["name_outcome"] == "wrong document"
+    assert held["bank_proof_summary"]["source"] == "pdf"
+    assert [message["check"] for message in held["vendor_messages"]] == ["bank_proof_document"]
+    assert "separate bank letter" in held["vendor_messages"][0]["message"]
+    assert fixed["status"] == "approved"
+    assert fixed["comparison"]["previous_run_id"] == held["id"]
+
+
+def test_interview_branch_change_requires_both_sides_of_ifsc_comparison():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    demo_dir = DATA.parent / "output" / "pdf"
+    current = demo_dir / "juniper_bank_account_confirmation.pdf"
+    with TestClient(app) as client:
+        fields = _juniper_submission(client)
+        held = _run_interview_pdf(client, fields, demo_dir / "juniper_bank_ifsc_mismatch.pdf")
+        partial = _run_interview_pdf(client, {**fields, "bank_routing": ""}, current, previous=held)
+        fixed = _run_interview_pdf(client, fields, current, previous=partial)
+        history = client.get(f"/api/cases/{held['case_id']}").json()
+    assert held["bank_proof_summary"]["account_outcome"] == "match"
+    assert held["bank_proof_summary"]["ifsc_outcome"] == "mismatch"
+    assert partial["bank_proof_summary"]["ifsc_outcome"] == "not comparable"
+    assert [message["check"] for message in partial["vendor_messages"]] == ["bank_ifsc_match"]
+    assert fixed["bank_proof_summary"]["ifsc_outcome"] == "match"
+    assert "the submitted IFSC matched the bank letter" in fixed["comparison"]["summary"]
+    assert [attempt["status"] for attempt in history["attempts"]] == ["pending", "pending", "approved"]
+
+
+def test_interview_stale_tab_cannot_skip_the_latest_pending_review():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    demo_dir = DATA.parent / "output" / "pdf"
+    current = demo_dir / "juniper_bank_account_confirmation.pdf"
+    with TestClient(app) as client:
+        fields = _juniper_submission(client)
+        partial_fields = {
+            **fields, "documents": [doc for doc in fields["documents"] if doc != "address_proof"],
+        }
+        first = _run_interview_pdf(client, partial_fields, demo_dir / "juniper_bank_account_mismatch.pdf")
+        latest = _run_interview_pdf(client, partial_fields, current, previous=first)
+        assert latest["status"] == "pending"
+        assert latest["bank_proof_summary"]["account_outcome"] == "match"
+        assert [message["check"] for message in latest["vendor_messages"]] == ["documents_complete"]
+
+        stale = client.post(
+            "/api/run",
+            data={**fields, "case_id": first["case_id"], "expected_previous_run_id": first["id"]},
+            files={"file": (current.name, current.read_bytes(), "application/pdf")},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["conflict"]["latest_run_id"] == latest["id"]
+        history_url = f"/api/cases/{first['case_id']}"
+        assert [item["id"] for item in client.get(history_url).json()["attempts"]] == [first["id"], latest["id"]]
+
+        final = _run_interview_pdf(client, fields, current, previous=latest)
+        assert final["attempt_number"] == 3 and final["previous_run_id"] == latest["id"]
+        history = client.get(history_url).json()
+        assert [attempt["status"] for attempt in history["attempts"]] == ["pending", "pending", "approved"]
 
 
 def test_pdf_run_record_hides_text_and_full_account():
@@ -823,6 +1400,19 @@ def test_valid_correction_appends_with_verified_predecessor():
     assert r2["previous_run_id"] == r1["id"]
     assert r2["predecessor_stale"] is False
     assert r2["comparison"]["previous_run_id"] == r1["id"]
+
+
+def test_reviewer_comparison_distinguishes_missing_proof_from_mismatch():
+    first = _runner.run_process(make(BASE, bank_account_number="9999999999"))
+    second = _runner.run_process(make(
+        BASE, bank_proof_text=None, case_id=first["case_id"],
+        expected_previous_run_id=first["id"],
+    ))
+    assert second["status"] == "pending"
+    comparison = second["comparison"]
+    assert comparison["current_blockers"] == ["no bank letter was supplied"]
+    assert _runner.get_run(second["id"])["comparison"] == comparison
+    assert _runner.get_case(first["case_id"])["runs"][-1]["comparison"] == comparison
 
 
 def test_new_case_path_still_works():

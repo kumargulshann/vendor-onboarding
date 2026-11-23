@@ -10,11 +10,33 @@ directory on port 8001. Use a fresh directory for each take.
 
 ```powershell
 $env:VENDOR_ONBOARDING_RUN_DIR = Join-Path ([System.IO.Path]::GetTempPath()) ("vendor-onboarding-demo-" + [guid]::NewGuid())
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
+
 ```
 
 Open [the local demo](http://127.0.0.1:8001). Use the supplied synthetic examples
 and the file `data/pdf/pdf_two_page_match.pdf`.
+
+The [four-case test report](EDGE_CASES.md) includes the PDF fixtures, expected
+and observed outcomes, and the recommended recording sequence.
+
+### Optional Gemini explanations
+
+In the project folder, create `.env` from [the template](.env.example) if
+needed. Paste your [Google AI Studio API key](https://aistudio.google.com/apikey)
+after `GEMINI_API_KEY=`. Git ignores the local file. The app selects
+`gemini-3.5-flash-lite` for explanations.
+
+If you set a key in PowerShell earlier, open a fresh terminal or run
+`Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue` so the app
+reads the key from the file. Restart the server, run a sample, and look for
+**Gemini summary generated from validation checks** in the live run view.
+The model receives the decision and specific findings, such as an IFSC
+mismatch or missing address proof. Submitted values and document text stay in
+the app. The rules determine the status and vendor actions. If Gemini fails
+or skips the required finding, the built-in explanation uses the same facts.
+
+On the local dashboard, **Clear run history** permanently removes saved runs
+after confirmation. Use it between rehearsals when you want a clean dashboard.
 
 ## Sample inputs
 | Step | Load example | What it is |
@@ -80,3 +102,23 @@ Record any hesitation points here:
 - **PDF upload path:** step 3 attaches a real bank-letter PDF; make sure the
   file is present (`data/pdf/pdf_two_page_match.pdf`) or the upload guard will
   block the run.
+
+## Optional PDF intake walkthrough
+
+1. In **Import vendor onboarding form**, choose
+   `data/pdf/supplier_registration_v2.pdf` and click **Read form PDF**.
+   The preview should show eight values with their source pages. The bank
+   account ends in `6809`, and **Show full account for review** reveals the
+   leading zeros. Click **Apply to new submission** to copy the values.
+2. Read and apply `data/pdf/vendor_onboarding_needs_review.pdf`. Two pages
+   give different account numbers. The field stays blank and **Run process**
+   remains disabled until the reviewer enters the verified account number.
+3. With local OCR available, read `data/pdf/supplier_registration_scan.pdf`.
+   Compare the suggestions with the scan and check the confirmation box to
+   enable **Apply to new submission**.
+
+OCR uses Tesseract with its English language data and Poppler's `pdftoppm`.
+Put both executables on PATH before starting the server. For executables
+outside PATH, set `ONBOARDING_TESSERACT` and `ONBOARDING_PDFTOPPM` to their
+full paths. Set `TESSDATA_PREFIX` to the folder containing `eng.traineddata`
+if Tesseract cannot find it. The scan limit is four pages and 1 MB.
