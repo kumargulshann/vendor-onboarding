@@ -35,6 +35,7 @@
   .import-panel .ocr-confirmation input{width:auto;margin-right:6px}
   .import-panel .ocr-confirmation[hidden]{display:none}
   .review-required{color:var(--amber)}
+  .correction-hint{margin:10px 0 0}
   .bank-comparison td,.bank-comparison th{overflow-wrap:anywhere}
   .bank-comparison .match{color:var(--green)}
   .bank-comparison .mismatch,.bank-comparison .wrong-document{color:var(--red)}
@@ -170,6 +171,7 @@
       <label><input type="checkbox" class="doc" value="address_proof" /> Address proof</label>
     </div>
     <p id="importReviewNeeded" class="muted review-required" role="status" hidden></p>
+    <p id="correctionHint" class="muted correction-hint" role="status" hidden></p>
     <button id="runBtn">▶ Run process</button>
 
     <div style="margin-top:18px">
@@ -180,7 +182,7 @@
         </div>
         <div id="stagelist" class="muted">Run the process to see each stage execute in real time.</div>
       </div>
-      <div id="result"></div>
+      <div id="result" tabindex="-1"></div>
     </div>
   </div>
 
@@ -222,8 +224,7 @@ let historyGen = 0;
 let dashboardGen = 0;
 let clearingHistory = false;
 const examples = new Map();
-let correctionCaseId = null;   // set when correcting an existing case
-let correctionPrevId = null;   // the attempt being corrected (verified on save)
+let correctionDraft = null;   // the case and saved attempt this tab is editing
 const MAX_PDF_BYTES = 1000000; // must match app/pdf_evidence.py
 const importFields = {
   vendor_name: 'Vendor name',
@@ -393,11 +394,11 @@ function showConflict(msg, conflict){
   el.style.display = 'block';
   if(conflict.latest_run_id){
     $('openLatestBtn').addEventListener('click',
-      ()=>showRun(conflict.latest_run_id));
+      ()=>showRun(conflict.latest_run_id, true));
   }
 }
 function correctionNeedsEvidence(){
-  return Boolean(correctionCaseId && !evidenceState.file && !F('bank_proof_text').trim());
+  return Boolean(correctionDraft?.state === 'open' && !evidenceState.file && !F('bank_proof_text').trim());
 }
 function setEvidenceInfo(){
   const info = $('evidenceInfo');
@@ -446,8 +447,7 @@ $('example').addEventListener('change', (e)=>{
   document.querySelectorAll('.doc').forEach(c=>c.checked = (d.documents||[]).includes(c.value));
   // loading an example clears the file picker and starts fresh evidence
   $('bank_pdf').value = '';
-  correctionCaseId = null;
-  correctionPrevId = null;
+  correctionDraft = null;
   evidenceGen++;
   evidenceState = { source: 'text', file: null, error: '' };
   showStatus('');
@@ -462,7 +462,7 @@ $('bank_pdf').addEventListener('change', (e)=>{
   if(!file){
     // explicitly cleared -> evidence returns to the pasted text, submission allowed
     evidenceState = { source: 'text', file: null, error: '' };
-    showStatus('');
+    if(correctionDraft?.state !== 'conflict') showStatus('');
     setEvidenceInfo();
     updateRunButton();
     return;
@@ -471,14 +471,16 @@ $('bank_pdf').addEventListener('change', (e)=>{
     // keep the error visible; block submission until replaced or cleared
     evidenceState = { source: 'pdf', file: null, error: 'file exceeds 1 MB limit' };
     setEvidenceInfo();
-    showStatus('The selected PDF exceeds the 1 MB limit. Replace it with a '
-      +'smaller bank letter or clear the file to submit.');
+    if(correctionDraft?.state !== 'conflict'){
+      showStatus('The selected PDF exceeds the 1 MB limit. Replace it with a '
+        +'smaller bank letter or clear the file to submit.');
+    }
     updateRunButton();
     return;
   }
   evidenceState = { source: 'pdf', file: file, error: '' };
   setEvidenceInfo();
-  showStatus('');
+  if(correctionDraft?.state !== 'conflict') showStatus('');
   updateRunButton();
 });
 
@@ -489,7 +491,16 @@ function updateRunButton(){
   note.textContent = unresolved.length
     ? 'Resolve the imported fields before running: '+unresolved.map(key=>importFields[key]).join(', ')+'.'
     : '';
+  const draft = correctionDraft;
+  const correctionHint = $('correctionHint');
+  correctionHint.hidden = !draft;
+  correctionHint.textContent = !draft ? '' : {
+    open: 'Correcting case '+draft.caseId+'. The next save will be attempt '+(draft.attemptNumber+1)+'.',
+    conflict: 'Open the latest attempt and choose Correct and resubmit to continue.',
+    closed: 'This case is closed. Choose Start new submission to review another vendor.'
+  }[draft.state];
   $('runBtn').disabled = running || clearingHistory || Boolean(hasInvalidFile())
+    || Boolean(draft && draft.state !== 'open')
     || correctionNeedsEvidence() || unresolved.length > 0;
   updateClearHistoryButton();
   updateImportButtons();
@@ -512,8 +523,8 @@ function formFields(){
     bank_routing: F('bank_routing').trim() || null,
     bank_proof_text: F('bank_proof_text').trim() || null,
     documents: docs(),
-    case_id: correctionCaseId,
-    expected_previous_run_id: correctionPrevId || null
+    case_id: correctionDraft?.caseId || null,
+    expected_previous_run_id: correctionDraft?.runId || null
   };
 }
 function buildRunBody(){
@@ -541,7 +552,8 @@ function buildRunBody(){
 // --- genuinely live run via SSE (fetch + stream reader) --------------------
 let running = false;
 async function run(){
-  if(running || clearingHistory) return;
+  const draft = correctionDraft;
+  if(running || clearingHistory || (draft && draft.state !== 'open')) return;
   if(unresolvedImportFields().length){
     updateRunButton();
     return;
@@ -568,6 +580,7 @@ async function run(){
   showStatus('');
   $('running').style.display = 'flex';
   let result = null;
+  let savedCorrection = false;
   try{
     const b = buildRunBody();
     const opts = b.multipart
@@ -596,13 +609,26 @@ async function run(){
           if(line.startsWith('event:')) evt = line.slice(6).trim();
           else if(line.startsWith('data:')) data += line.slice(5).trim();
         }
-        if(gen !== evidenceGen) continue;   // stale selection: ignore
-        if(evt === 'stage') addStage(JSON.parse(data));
-        else if(evt === 'result') result = JSON.parse(data);
-        else if(evt === 'error'){
-          failed = true;
+        if(evt === 'result'){
+          result = JSON.parse(data);
+          // Advance only after this tab receives its own saved correction.
+          // A file selection made during the run can change the visible
+          // draft, but it cannot undo the save the server just confirmed.
+          if(draft && correctionDraft === draft && result.case_id === draft.caseId
+             && result.previous_run_id === draft.runId){
+            correctionDraft = correctionFromRun(result);
+            savedCorrection = true;
+          }
+        }else if(evt === 'stage' && gen === evidenceGen){
+          addStage(JSON.parse(data));
+        }else if(evt === 'error'){
           const e = JSON.parse(data);
+          const activeConflict = Boolean(e.conflict && draft && correctionDraft === draft);
+          if(gen !== evidenceGen && !activeConflict) continue;
+          failed = true;
           $('stagelist').textContent = 'This attempt was not saved.';
+          $('log').textContent = '// no attempt saved';
+          if(activeConflict) draft.state = 'conflict';
           if(e.conflict && e.conflict.latest_run_id){
             showConflict(e.error, e.conflict);
           }else{
@@ -611,8 +637,12 @@ async function run(){
         }
       }
     }
-    if(gen === evidenceGen && result) renderResult(result);
-    else if(gen === evidenceGen && !failed){
+    if(result && (gen === evidenceGen || (savedCorrection && correctionDraft?.state === 'closed'))){
+      renderResult(result);
+    }else if(savedCorrection){
+      $('stagelist').textContent = 'Attempt '+result.attempt_number+' saved. Run again to review the current evidence.';
+      $('log').textContent = '// open the saved attempt from run history';
+    }else if(gen === evidenceGen && !failed){
       $('stagelist').textContent = 'The connection ended before the result arrived.';
       showStatus('Check the dashboard for a saved attempt before retrying.');
     }
@@ -796,8 +826,7 @@ function startNewSubmission(announce = true){
   // Reset EVERYTHING from the previous vendor so the next Run cannot reuse
   // their evidence: fields, account, pasted letter, file picker, checklist,
   // evidence state and the case link.
-  correctionCaseId = null;
-  correctionPrevId = null;
+  correctionDraft = null;
   resetOnboardingImport();
   $('example').value = '';
   ['vendor_name','legal_name','tax_id','contact_email',
@@ -815,10 +844,18 @@ function startNewSubmission(announce = true){
   if(announce) $('vendor_name').focus();
 }
 
+function correctionFromRun(r){
+  return {
+    caseId: r.case_id,
+    runId: r.id,
+    attemptNumber: r.attempt_number || 1,
+    state: r.status === 'pending' ? 'open' : 'closed'
+  };
+}
+
 function startCorrection(r){
   if(clearingHistory) return;
-  correctionCaseId = r.case_id;
-  correctionPrevId = r.id;   // the attempt being corrected; server verifies it
+  correctionDraft = correctionFromRun(r); // the server verifies this predecessor on save
   resetOnboardingImport();
   $('example').value = '';
   const inp = r.input || {};
@@ -843,9 +880,7 @@ function startCorrection(r){
   evidenceState = { source: 'text', file: null, error: '' };
   setEvidenceInfo();
   updateRunButton();
-  showStatus('Correcting case '+esc(r.case_id)+' — this will be attempt '
-    +esc((r.attempt_number||1)+1)+'. Re-enter the full account number and '
-    +'re-provide bank proof, then Run.');
+  showStatus('');
   $('bank_account_number').focus();
 }
 
@@ -865,7 +900,7 @@ async function clearHistory(){
     const result = await response.json();
     if(response.ok || result.deleted){
       historyGen++;
-      if(correctionCaseId) startNewSubmission(false);
+      if(correctionDraft) startNewSubmission(false);
       $('result').replaceChildren();
       $('stagelist').textContent = 'Run the process to see each stage execute in real time.';
       $('log').textContent = '// no run selected';
@@ -909,7 +944,7 @@ async function loadCases(){
   }
 }
 
-async function showRun(id){
+async function showRun(id, focusResult = false){
   if(running || clearingHistory) return;
   const gen = ++historyGen;
   try{
@@ -917,9 +952,15 @@ async function showRun(id){
     if(!res.ok) throw new Error('HTTP '+res.status+' (run not found)');
     const r = await res.json();
     if(gen !== historyGen) return;
+    if(focusResult && correctionDraft?.state === 'conflict'
+       && correctionDraft.caseId === r.case_id && r.status !== 'pending'){
+      correctionDraft = correctionFromRun(r);
+      updateRunButton();
+    }
     renderStages(r);
     renderResult(r);
     showStatus('');
+    if(focusResult) $('result').focus();
   }catch(e){
     if(gen === historyGen) showStatus('Could not open this attempt. The last view is still shown.');
   }

@@ -4,7 +4,7 @@ Day 4 browser verification: reviewer comparison + upload guards + checklist.
 Flows verified:
   (a) account mismatch corrected to approved -> comparison summary readable
   (b) missing documents corrected to approved -> comparison + vendor message
-  (c) incomplete correction stays pending -> "issue remains"
+  (c) incomplete correction stays pending, then the same draft can be retried
   (d) open attempts in both directions -> comparison/decision/evidence/stages/
       vendor message all describe the SELECTED attempt
   (e) new submission after a correction -> NEW case id
@@ -154,6 +154,19 @@ def main():
         print("(c) incomplete correction ->", badge())
         assert "is still held because" in rt
         assert "No check outcome changed" in rt
+        pending_correction = json.loads(pg.inner_text("#log"))
+        assert pending_correction["attempt_number"] == 2
+        assert "attempt 3" in pg.inner_text("#correctionHint")
+
+        # Keep the selected bank letter and retry from the same open draft.
+        pg.fill("#bank_account_number", ACCOUNT_FULL)
+        pg.click("#runBtn")
+        wait_badge("APPROVED")
+        resumed = json.loads(pg.inner_text("#log"))
+        assert resumed["case_id"] == pending_correction["case_id"]
+        assert resumed["previous_run_id"] == pending_correction["id"]
+        assert resumed["attempt_number"] == 3
+        assert pg.is_disabled("#runBtn")
 
         # --- (d) open attempts both directions ------------------------------
         # open attempt 1 (pending) by run id -> standalone view + its stages

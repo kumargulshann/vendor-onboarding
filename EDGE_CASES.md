@@ -105,7 +105,8 @@ the previous branch code. Both sources identify the same payment account.
 1. Run the [confirmation with the old IFSC](output/pdf/juniper_bank_ifsc_mismatch.pdf).
 2. Correct the case with the [current bank confirmation](output/pdf/juniper_bank_account_confirmation.pdf).
    Re-enter the account number and leave the form’s IFSC blank.
-3. Correct again with the current confirmation and enter `DEMO0001234`.
+3. In the same tab, keep the current confirmation selected, enter
+   `DEMO0001234`, and click **Run process** to save attempt 3.
 
 **Expected outcome**
 

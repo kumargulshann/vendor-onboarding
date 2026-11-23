@@ -95,6 +95,8 @@ def one_scenario(pg_a, pg_b, case_label, tab_a_account, expected_latest):
     print(f"tab A saved -> attempt 2 ({att2})")
 
     # Tab B submits its still-open form (targets attempt 1 -> stale)
+    pg_b.fill("#bank_account_number", ACCOUNT_FULL)
+    pg_b.set_input_files("#bank_pdf", PDF)
     run_form(pg_b)
     # tab B must NOT get a result; it must show a conflict
     pg_b.wait_for_function(
@@ -107,6 +109,7 @@ def one_scenario(pg_a, pg_b, case_label, tab_a_account, expected_latest):
     # tab B must NOT show a new result pill (no attempt 3)
     has_pill_b = pg_b.query_selector("#result .pill")
     assert has_pill_b is None, "tab B created a new attempt (stale save not blocked)"
+    assert pg_b.is_disabled("#runBtn"), "stale draft remains submittable"
 
     # verify via the API: exactly 2 attempts, latest decision unchanged
     case = get(f"/api/cases/{case_id}")
